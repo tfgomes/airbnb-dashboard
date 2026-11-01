@@ -389,9 +389,9 @@ with detalhe:
         file_name=f"resumo_{ano}.csv",
         mime="text/csv",
     )
-
 with precos:
     st.subheader(f"Planeamento · {ano + 1}")
+
     st.caption(
         "Simulador manual de preços por noite. "
         "O histórico Earnings/noite é apenas uma referência, "
@@ -400,7 +400,9 @@ with precos:
 
     base = pd.DataFrame({
         "Mês": MESES,
-        "Histórico Earnings/noite (€)": mensal["Média/noite (€)"].round(2),
+        "Histórico Earnings/noite (€)": (
+            mensal["Média/noite (€)"].round(2)
+        ),
         "Preço base (€)": [0.0] * 12,
         "Preço mínimo (€)": [0.0] * 12,
         "Ocupação objetivo (%)": [0.0] * 12,
@@ -408,35 +410,203 @@ with precos:
 
     plano = st.data_editor(
         base,
-        disabled=["Mês", "Histórico Earnings/noite (€)"],
+        disabled=[
+            "Mês",
+            "Histórico Earnings/noite (€)",
+        ],
         hide_index=True,
         width="stretch",
         key=f"plano_{alojamento}_{ano}",
         column_config={
-            "Preço base (€)": st.column_config.NumberColumn(min_value=0.0),
-            "Preço mínimo (€)": st.column_config.NumberColumn(min_value=0.0),
+            "Preço base (€)": st.column_config.NumberColumn(
+                min_value=0.0,
+                step=1.0,
+                format="%.2f",
+            ),
+            "Preço mínimo (€)": st.column_config.NumberColumn(
+                min_value=0.0,
+                step=1.0,
+                format="%.2f",
+            ),
             "Ocupação objetivo (%)": st.column_config.NumberColumn(
-                min_value=0.0, max_value=100.0
+                min_value=0.0,
+                max_value=100.0,
+                step=1.0,
+                format="%.1f",
             ),
         },
     )
 
-    cenarios = plano[["Mês", "Preço base (€)"]].copy()
+    # Tratar células apagadas como zero.
+    colunas_editaveis = [
+        "Preço base (€)",
+        "Preço mínimo (€)",
+        "Ocupação objetivo (%)",
+    ]
+
+    for coluna in colunas_editaveis:
+        plano[coluna] = pd.to_numeric(
+            plano[coluna],
+            errors="coerce",
+        ).fillna(0.0)
+
+    st.subheader("Preços após desconto")
+
+    cenarios = plano[
+        ["Mês", "Preço base (€)"]
+    ].copy()
+
     for desconto in [5, 7, 10, 15, 20]:
         cenarios[f"−{desconto}% (€)"] = (
-            plano["Preço base (€)"] * (1 - desconto / 100)
+            plano["Preço base (€)"]
+            * (1 - desconto / 100)
         ).round(2)
 
-    st.dataframe(cenarios, hide_index=True, width="stretch")
+    st.dataframe(
+        cenarios,
+        hide_index=True,
+        width="stretch",
+    )
 
-    desconto = st.selectbox("Desconto para a simulação", [0, 5, 7, 10, 15, 20])
-    finais = plano["Preço base (€)"] * (1 - desconto / 100)
-    dias = pd.Series([
-        calendar.monthrange(int(ano) + 1, m)[1]
-        for m in range(1, 13)
-    ])
-    receita = finais * dias * plano["Ocupação objetivo (%)"] / 100
+    st.subheader("Simulação de receita")
 
-    st.metric("Receita bruta simulada anual", euros(receita.sum()))
+    desconto = st.selectbox(
+        "Desconto para a simulação",
+        options=[0, 5, 7, 10, 15, 20],
+        format_func=lambda valor: f"{valor}%",
+    )
+
+    finais = (
+        plano["Preço base (€)"]
+        * (1 - desconto / 100)
+    ).round(2)
+
+    dias = pd.Series(
+        [
+            calendar.monthrange(
+                int(ano) + 1,
+                mes,
+            )[1]
+            for mes in range(1, 13)
+        ],
+        index=plano.index,
+    )
+
+    noites_estimadas = (
+        dias
+        * plano["Ocupação objetivo (%)"]
+        / 100
+    )
+
+    receita = finais * noites_estimadas
+
+    simulacao = pd.DataFrame({
+        "Mês": plano["Mês"],
+        "Dias do mês": dias,
+        "Preço após desconto (€)": finais,
+        "Ocupação objetivo (%)": plano["Ocupação objetivo (%)"],
+        "Noites estimadas": noites_estimadas.round(1),
+        "Receita bruta simulada (€)": receita.round(2),
+    })
+
+    st.metric(
+        "Receita bruta simulada anual",
+        euros(receita.sum()),
+    )
+
     st.caption(
-        "Preço após desconto × dias do mês × ocupa
+        "Preço após desconto × dias do mês × ocupação objetivo. "
+        "Sem dedução de comissões, despesas ou impostos. "
+        "Os descontos são alternativos, não acumulados. "
+        "Esta simulação não desconta bloqueios pessoais."
+    )
+
+    st.dataframe(
+        simulacao,
+        hide_index=True,
+        width="stretch",
+    )
+
+    abaixo = plano.loc[
+        finais < plano["Preço mínimo (€)"],
+        "Mês",
+    ].tolist()
+
+    if abaixo:
+        st.warning(
+            "Preço abaixo do mínimo em: "
+            + ", ".join(abaixo)
+        )
+
+    exportacao = plano.merge(
+        cenarios,
+        on=["Mês", "Preço base (€)"],
+        how="left",
+        validate="one_to_one",
+    )
+
+    st.download_button(
+        label="Descarregar plano e descontos",
+        data=exportacao.to_csv(
+            index=False,
+            sep=";",
+            decimal=",",
+        ).encode("utf-8-sig"),
+        file_name=f"plano_precos_{ano + 1}.csv",
+        mime="text/csv",
+    )
+
+    st.info(
+        "O plano ainda não é guardado entre sessões. "
+        "Descarrega o CSV para conservar as alterações."
+    )
+
+
+with qualidade:
+    st.subheader("Regras de cálculo")
+
+    st.markdown(
+        """
+        - Noites anteriores à data de referência: realizado.
+        - A noite de hoje e seguintes: futuro.
+        - O dia do check-out não conta como noite.
+        - Earnings repartido proporcionalmente pelas noites.
+        - Ocupação calculada sobre todos os dias do calendário.
+        - Bloqueios pessoais ainda não são descontados.
+        - Cancelamentos não contam como noites nem como receita de estadias.
+        - Nomes e contactos não entram na tabela analítica.
+        """
+    )
+
+    st.write(
+        "Reservas únicas não canceladas com noites no ano:",
+        ano_noites["Reserva"].nunique(),
+    )
+
+    st.subheader("Cancelamentos · todo o ficheiro")
+
+    st.metric(
+        "Earnings em cancelamentos · separado",
+        euros(canceladas["Valor"].sum()),
+    )
+
+    st.caption(
+        "Não incluído nos totais de estadias. "
+        "O CSV não fornece uma data financeira que permita "
+        "atribuir estes valores com segurança "
+        "a um mês de recebimento."
+    )
+
+    if not canceladas.empty:
+        st.dataframe(
+            canceladas[
+                [
+                    "Status",
+                    "Entrada",
+                    "Saída",
+                    "Valor",
+                ]
+            ],
+            hide_index=True,
+            width="stretch",
+        )
