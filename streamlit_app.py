@@ -33,11 +33,9 @@ try:
         f"Reservas guardadas: {resultado.count}"
     )
 
-except Exception:
-    st.error(
-        "Não foi possível ligar ao Supabase. "
-        "Verifica os Secrets e as permissões da tabela."
-    )
+except Exception as erro:
+    st.error("Não foi possível ligar ao Supabase.")
+    st.code(str(erro))
     st.stop()
 
 MESES = [
