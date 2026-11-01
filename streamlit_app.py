@@ -1,6 +1,7 @@
 import calendar
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from supabase import create_client
 
 import pandas as pd
 import plotly.express as px
@@ -12,6 +13,32 @@ st.set_page_config(
     page_icon="🏠",
     layout="wide",
 )
+
+# Testar a ligação à base de dados.
+try:
+    supabase = create_client(
+        st.secrets["supabase"]["url"],
+        st.secrets["supabase"]["key"],
+    )
+
+    resultado = (
+        supabase.table("reservations")
+        .select("confirmation_code", count="exact")
+        .limit(1)
+        .execute()
+    )
+
+    st.success(
+        f"Ligação ao Supabase confirmada. "
+        f"Reservas guardadas: {resultado.count}"
+    )
+
+except Exception:
+    st.error(
+        "Não foi possível ligar ao Supabase. "
+        "Verifica os Secrets e as permissões da tabela."
+    )
+    st.stop()
 
 MESES = [
     "Janeiro", "Fevereiro", "Março", "Abril",

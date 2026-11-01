@@ -8,6 +8,7 @@ dependencies = [
     "pandas>=3.0.3",
     "plotly>=7.1.0",
     "streamlit>=1.61.1",
+    "supabase>=2.33.0",
 ]
 
 [tool.uv]
