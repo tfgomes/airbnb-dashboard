@@ -1,5 +1,8 @@
+import base64
 import html
+import re
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -12,6 +15,7 @@ from core import (
     MESES,
     MESES_CURTOS,
     euros,
+    euros_sinal,
     etiqueta_euros,
     percentagem,
     texto_variacao,
@@ -32,6 +36,24 @@ st.set_page_config(
 HOJE = pd.Timestamp(datetime.now(ZoneInfo("Europe/Lisbon")).date())
 
 PROPRIETARIOS = ["Tiago", "Guilhermino"]
+PASTA_FOTOS = Path(__file__).parent / "assets"
+
+# Nome curto e proprietário sugeridos para os anúncios conhecidos. Valem
+# enquanto não houver outra escolha guardada no separador Dados.
+SUGESTOES = {
+    "Apartamento Moderno c/Piscina, a 12 min da Praia": (
+        "T1+1 - Almeida Garrett", "Tiago",
+    ),
+    "Apartamento com dois quartos perto da praia 550m": (
+        "T2 - Gil Vicente", "Guilhermino",
+    ),
+    "Charme Studio with Pool, Oldtown - 300m to Beach": (
+        "T0 - Bayview", "Guilhermino",
+    ),
+    "Magnifico Apto renovado c/piscina 12 min da praia": (
+        "T1 - Dunfermline", "Guilhermino",
+    ),
+}
 TODOS = "Todos"
 TODOS_ALOJAMENTOS = "Todos os alojamentos"
 
@@ -115,6 +137,30 @@ section[data-testid="stSidebar"] { background: #FAFAFA; border-right: 1px solid 
 .ad-linha-valor span { font-size: 0.78rem; color: #6A6A6A; }
 .ad-progresso { height: 8px; background: #F0F0F0; border-radius: 999px; overflow: hidden; margin-top: 10px; }
 .ad-progresso i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #E61E4D, #D70466); }
+.ad-cabecalho { display: flex; align-items: center; gap: 18px; margin-bottom: 1.2rem; }
+.ad-cabecalho img.ad-foto { width: 132px; height: 88px; object-fit: cover; border-radius: 16px; flex: 0 0 auto; box-shadow: 0 2px 8px rgba(0,0,0,0.10); }
+.ad-cabecalho .ad-subtitulo { margin-bottom: 0; }
+.ad-miniatura { width: 56px; height: 40px; object-fit: cover; border-radius: 10px; flex: 0 0 auto; }
+.ad-tabela-caixa { border: 1px solid #EBEBEB; border-radius: 18px; overflow-x: auto; background: #FFFFFF; margin: 0.4rem 0 0.7rem 0; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+.ad-tabela-caixa table.ad-tabela { width: 100%; border-collapse: collapse; font-size: 0.9rem; font-variant-numeric: tabular-nums; margin: 0; }
+.ad-tabela-caixa table.ad-tabela th { text-align: right; font-weight: 600; font-size: 0.7rem; letter-spacing: 0.04em; text-transform: uppercase; color: #6A6A6A; padding: 12px 12px; border: none !important; border-bottom: 1px solid #EBEBEB !important; white-space: nowrap; background: #FAFAFA; }
+.ad-tabela-caixa table.ad-tabela td { text-align: right; padding: 10px 12px; border: none !important; border-bottom: 1px solid #F2F2F2 !important; white-space: nowrap; color: #222222; }
+.ad-tabela-caixa table.ad-tabela th.esq, .ad-tabela-caixa table.ad-tabela td.esq { text-align: left; }
+.ad-tabela-caixa table.ad-tabela td.esq { font-weight: 600; }
+.ad-tabela-caixa table.ad-tabela tr:hover td { background-color: #FAFAFA; }
+.ad-tabela-caixa table.ad-tabela tr.total td { font-weight: 700; border-top: 2px solid #222222 !important; border-bottom: none !important; background: #FAFAFA; }
+.ad-tabela-caixa table.ad-tabela tr.apagada td { color: #B0B0B0; }
+.ad-pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
+.ad-pill.sobe { background: #E6F4E6; color: #00710A; }
+.ad-pill.desce { background: #FBE9E6; color: #B32505; }
+.ad-pill.neutro { background: #F0F0F0; color: #6A6A6A; }
+.ad-mais { color: #00710A; font-weight: 600; }
+.ad-menos { color: #B32505; font-weight: 600; }
+.ad-forte { font-weight: 700; }
+.ad-mini { display: inline-flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.ad-mini i { display: inline-block; width: 60px; height: 6px; border-radius: 999px; background: #EDEDED; overflow: hidden; }
+.ad-mini i b { display: block; height: 100%; border-radius: 999px; background: #222222; }
+.ad-mini.rosa i b { background: linear-gradient(90deg, #E61E4D, #D70466); }
 .stTabs [data-baseweb="tab-list"] { gap: 6px; border-bottom: 1px solid #EBEBEB; }
 .stTabs [data-baseweb="tab"] { font-weight: 600; padding: 10px 14px; }
 div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] { border-radius: 14px; }
@@ -170,7 +216,8 @@ def barras_alojamentos(linhas):
         quota = 100 * max(valor, 0) / total if total else 0
         partes.append(
             '<div class="ad-linha">'
-            f'<div class="ad-linha-nome"><b>{h(nome)}</b><span>{h(legenda)}</span></div>'
+            + imagem_html(nome, "ad-miniatura")
+            + f'<div class="ad-linha-nome"><b>{h(nome)}</b><span>{h(legenda)}</span></div>'
             f'<div class="ad-linha-barra"><i style="width:{quota:.1f}%"></i></div>'
             f'<div class="ad-linha-valor"><b>{h(euros(valor))}</b>'
             f"<span>{h(percentagem(quota))}</span></div>"
@@ -179,6 +226,110 @@ def barras_alojamentos(linhas):
     st.markdown(
         '<div class="ad-cartao">' + "".join(partes) + "</div>",
         unsafe_allow_html=True,
+    )
+
+
+def tabela_html(cabecalhos, linhas, total=None, apagadas=()):
+    """Tabela com o estilo do painel.
+
+    cabecalhos  lista de títulos; a primeira coluna fica alinhada à esquerda
+    linhas      lista de linhas; cada célula é HTML já seguro, ou um par
+                (HTML, estilo CSS) para pintar o fundo da célula
+    total       linha final em destaque (opcional)
+    apagadas    índices das linhas a mostrar a cinzento (meses sem dados)
+    """
+    def celulas(linha):
+        partes = []
+        for posicao, celula in enumerate(linha):
+            estilo = ""
+            if isinstance(celula, tuple):
+                celula, estilo = celula
+            classe = ' class="esq"' if posicao == 0 else ""
+            atributo = f' style="{estilo}"' if estilo else ""
+            partes.append(f"<td{classe}{atributo}>{celula}</td>")
+        return "".join(partes)
+
+    topo = "".join(
+        f'<th{" class=esq" if posicao == 0 else ""}>{h(titulo)}</th>'
+        for posicao, titulo in enumerate(cabecalhos)
+    )
+    corpo = "".join(
+        f'<tr{" class=apagada" if indice in apagadas else ""}>{celulas(linha)}</tr>'
+        for indice, linha in enumerate(linhas)
+    )
+    if total is not None:
+        corpo += f'<tr class="total">{celulas(total)}</tr>'
+
+    st.markdown(
+        '<div class="ad-tabela-caixa"><table class="ad-tabela">'
+        f"<thead><tr>{topo}</tr></thead><tbody>{corpo}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def c_euros(valor, casas=2, zero_vazio=True):
+    if valor is None or pd.isna(valor) or (zero_vazio and abs(valor) < 0.005):
+        return "—"
+    return h(euros(valor, casas))
+
+
+def c_diferenca(valor):
+    """Diferença em euros, verde se positiva e vermelha se negativa."""
+    if valor is None or pd.isna(valor) or abs(valor) < 0.005:
+        return "—"
+    classe = "ad-mais" if valor > 0 else "ad-menos"
+    return f'<span class="{classe}">{h(euros_sinal(valor))}</span>'
+
+
+def c_variacao(valor):
+    """Variação percentual dentro de uma etiqueta colorida."""
+    if valor is None or pd.isna(valor):
+        return "—"
+    classe = "sobe" if valor >= 0 else "desce"
+    return f'<span class="ad-pill {classe}">{h(texto_variacao(valor))}</span>'
+
+
+def c_barra(valor, rosa=False):
+    """Percentagem com uma barra pequena ao lado."""
+    if valor is None or pd.isna(valor):
+        return "—"
+    largura = max(0.0, min(100.0, float(valor)))
+    classe = "ad-mini rosa" if rosa else "ad-mini"
+    return (
+        f'<span class="{classe}">{h(percentagem(valor, 0))}'
+        f'<i><b style="width:{largura:.0f}%"></b></i></span>'
+    )
+
+
+def c_calor(valor, maximo, casas=2):
+    """Valor em euros com fundo mais intenso quanto maior for."""
+    if valor is None or pd.isna(valor) or abs(valor) < 0.005:
+        return "—"
+    intensidade = 0.20 * max(0.0, float(valor)) / maximo if maximo else 0
+    return (h(euros(valor, casas)), f"background:rgba(230,30,77,{intensidade:.3f})")
+
+
+def codigo_foto(nome):
+    """'T1+1 - Almeida Garrett' -> 't1+1' (nome do ficheiro em assets/)."""
+    palavras = str(nome).strip().split()
+    return re.sub(r"[^a-z0-9+]", "", palavras[0].lower()) if palavras else ""
+
+
+@st.cache_data(show_spinner=False)
+def foto_base64(codigo):
+    ficheiro = PASTA_FOTOS / f"{codigo}.jpg"
+    if not codigo or not ficheiro.is_file():
+        return None
+    return base64.b64encode(ficheiro.read_bytes()).decode("ascii")
+
+
+def imagem_html(nome, classe):
+    dados_foto = foto_base64(codigo_foto(nome))
+    if not dados_foto:
+        return ""
+    return (
+        f'<img class="{classe}" alt="{h(nome)}" '
+        f'src="data:image/jpeg;base64,{dados_foto}">'
     )
 
 
@@ -459,7 +610,11 @@ def painel_importacao():
             ):
                 try:
                     lote = core.preparar_lote_csv(ficheiros)
-                    st.session_state["importacao"] = guardar_reservas(lote)
+                    resultado_importacao = guardar_reservas(lote)
+                    resultado_importacao["ignoradas"] = lote.attrs.get(
+                        "ignoradas", 0,
+                    )
+                    st.session_state["importacao"] = resultado_importacao
                     limpar_cache()
                     st.rerun()
                 except Exception as erro:
@@ -486,6 +641,12 @@ if "importacao" in st.session_state:
         f"Importação concluída: {resultado['novos']} novas, "
         f"{resultado['alterados']} atualizadas e {resultado['iguais']} iguais."
     )
+    if resultado.get("ignoradas"):
+        st.warning(
+            f"{resultado['ignoradas']} reservas antigas vinham sem valor "
+            "(coluna Earnings vazia) e não foram importadas. Exporta esses "
+            "meses a partir da conta do proprietário para as incluir."
+        )
 
 
 # =========================================================
@@ -541,8 +702,11 @@ def montar_propriedades():
 
     for listing in listings:
         registo = guardadas.get(listing, {})
-        nome = (registo.get("display_name") or "").strip() or listing
-        dono = (registo.get("owner") or "").strip() or PROPRIETARIOS[0]
+        nome_sugerido, dono_sugerido = SUGESTOES.get(
+            listing, (listing, PROPRIETARIOS[0]),
+        )
+        nome = (registo.get("display_name") or "").strip() or nome_sugerido
+        dono = (registo.get("owner") or "").strip() or dono_sugerido
 
         # Nomes curtos repetidos tornariam a escolha ambígua.
         candidato = nome
@@ -556,7 +720,7 @@ def montar_propriedades():
             "Listing": listing,
             "Nome": candidato,
             "Proprietário": dono,
-            "Configurado": listing in guardadas,
+            "Configurado": listing in guardadas or listing in SUGESTOES,
         })
 
     return pd.DataFrame(linhas).set_index("Listing")
@@ -710,9 +874,16 @@ if comparaveis:
         if len(comparaveis) == 1
         else f"{MESES_CURTOS[comparaveis[0]]}–{MESES_CURTOS[comparaveis[-1]]}"
     )
+    noites_atual = float(mensal.iloc[comparaveis]["Noites"].sum())
+    noites_antes = float(mensal_anterior.iloc[comparaveis]["Noites"].sum())
+    variacao_media = variacao(
+        base_atual / noites_atual if noites_atual else None,
+        base_antes / noites_antes if noites_antes else None,
+    )
 else:
     crescimento_ano = None
     periodo_comparavel = ""
+    variacao_media = None
 
 
 # =========================================================
@@ -735,8 +906,10 @@ else:
     )
 
 st.markdown(
-    f'<p class="ad-titulo">{h(titulo)}</p>'
-    f'<p class="ad-subtitulo">{h(subtitulo)}</p>',
+    '<div class="ad-cabecalho">'
+    + (imagem_html(titulo, "ad-foto") if alojamento_unico else "")
+    + f'<div><p class="ad-titulo">{h(titulo)}</p>'
+    f'<p class="ad-subtitulo">{h(subtitulo)}</p></div></div>',
     unsafe_allow_html=True,
 )
 
@@ -794,8 +967,6 @@ with aba_desempenho:
         if anual["reservas"] else None
     )
 
-    media_antes = core.resumo_anual(mensal_anterior, ano_anterior, HOJE)["media_noite"]
-
     cartoes([
         {
             "rotulo": f"Rendimento líquido {ano}",
@@ -824,9 +995,12 @@ with aba_desempenho:
         {
             "rotulo": "Média líquida por noite",
             "valor": euros(anual["media_noite"]),
-            "nota": nota_variacao(
-                variacao(anual["media_noite"], media_antes),
-                f"vs {ano_anterior}",
+            "nota": (
+                nota_variacao(
+                    variacao_media, f"vs {ano_anterior} ({periodo_comparavel})",
+                )
+                if variacao_media is not None
+                else h("por noite ocupada")
             ),
         },
     ])
@@ -955,48 +1129,274 @@ with aba_desempenho:
 
 with aba_mensal:
 
+    liquido_atual = mensal["Total líquido (€)"].astype(float)
+    liquido_antes = mensal_anterior["Total líquido (€)"].astype(float)
+    acumulado_atual = liquido_atual.cumsum()
+    acumulado_antes = liquido_antes.cumsum()
+    maximo_mes = float(max(liquido_atual.max(), liquido_antes.max(), 1.0))
+    ha_anterior = liquido_antes.sum() > 0
+
+    sem_dados = {
+        indice for indice in range(12)
+        if liquido_atual.iloc[indice] < 0.005 and liquido_antes.iloc[indice] < 0.005
+    }
+
+    # ----- 1. Rendimento e comparação -----
+
     seccao(
-        f"Análise mensal · {ano}",
-        "Valores sem taxa turística. A última coluna compara com o mesmo mês "
-        f"de {ano_anterior}.",
+        f"Rendimento · {ano} face a {ano_anterior}" if ha_anterior
+        else f"Rendimento · {ano}",
+        "Valores líquidos, sem taxa turística. O acumulado soma os meses "
+        "desde janeiro.",
     )
 
-    analise = mensal[[
-        "Mês", "Total líquido (€)", "Noites", "Ocupação (%)",
-        "Média líquida/noite (€)", "Reservas", "Duração média",
-        "Taxa utilizada (€)", "Cancelamentos retidos (€)", "Reembolsos (€)",
-        "Total do mês (€)",
-    ]].copy()
-
-    analise[f"vs {ano_anterior}"] = [
-        variacao(atual, antes)
-        for atual, antes in zip(
-            mensal["Total líquido (€)"], mensal_anterior["Total líquido (€)"],
+    linhas_rendimento = []
+    for indice in range(12):
+        atual = liquido_atual.iloc[indice]
+        antes = liquido_antes.iloc[indice]
+        linha = [h(MESES[indice]), c_calor(atual, maximo_mes)]
+        if ha_anterior:
+            linha += [
+                c_euros(antes),
+                c_diferenca(atual - antes) if indice not in sem_dados else "—",
+                # A percentagem só aparece em meses fechados e comparáveis.
+                c_variacao(variacao(atual, antes)) if indice in comparaveis else "—",
+            ]
+        linha.append(
+            f'<span class="ad-forte">{c_euros(acumulado_atual.iloc[indice])}</span>'
         )
+        if ha_anterior:
+            linha += [
+                c_euros(acumulado_antes.iloc[indice]),
+                c_diferenca(
+                    acumulado_atual.iloc[indice] - acumulado_antes.iloc[indice]
+                ),
+            ]
+        linhas_rendimento.append(linha)
+
+    if ha_anterior:
+        tabela_html(
+            [
+                "Mês", str(ano), str(ano_anterior), "Diferença", "Variação",
+                f"Acumulado {ano}", f"Acumulado {ano_anterior}", "Dif. acumulada",
+            ],
+            linhas_rendimento,
+            total=[
+                "Total",
+                c_euros(liquido_atual.sum()),
+                c_euros(liquido_antes.sum()),
+                c_diferenca(liquido_atual.sum() - liquido_antes.sum()),
+                c_variacao(crescimento_ano),
+                "", "", "",
+            ],
+            apagadas=sem_dados,
+        )
+        if comparaveis:
+            st.caption(
+                "A variação em percentagem só aparece nos meses já fechados em "
+                f"que {ano_anterior} esteve à venda o mês inteiro "
+                f"({periodo_comparavel}); a do total usa só esses meses."
+            )
+    else:
+        tabela_html(
+            ["Mês", str(ano), f"Acumulado {ano}"],
+            linhas_rendimento,
+            total=["Total", c_euros(liquido_atual.sum()), ""],
+            apagadas=sem_dados,
+        )
+
+    if not ha_anterior:
+        st.caption(
+            f"Ainda não há dados de {ano_anterior} para esta seleção; as "
+            "colunas de comparação ficam preenchidas quando os carregares."
+        )
+
+    # ----- 2. Preço por noite e ocupação -----
+
+    seccao(
+        "Preço por noite e ocupação",
+        "Mínimo, média e máximo do que cada noite rendeu. O potencial é o "
+        "que o mês renderia com todas as noites ao preço da melhor noite."
+        if alojamento_unico else
+        "Noites ocupadas e média do que cada noite rendeu.",
+    )
+
+    sem_noites = {
+        indice for indice in range(12) if mensal["Noites"].iloc[indice] == 0
+    }
+
+    cabecalho_noites = ["Mês", "Noites", "Ocupação", "Reservas", "Estadia média"]
+    if alojamento_unico:
+        cabecalho_noites += [
+            "Mínimo", "Média", "Máximo", "Potencial ao máximo", "Por captar",
+        ]
+    else:
+        cabecalho_noites += ["Média por noite"]
+
+    linhas_noites = []
+    for indice in range(12):
+        linha = mensal.iloc[indice]
+        celulas_linha = [
+            h(MESES[indice]),
+            h(inteiro(linha["Noites"])) if linha["Noites"] else "—",
+            c_barra(linha["Ocupação (%)"]) if linha["Noites"] else "—",
+            h(inteiro(linha["Reservas"])) if linha["Reservas"] else "—",
+            h(decimal(linha["Duração média"])),
+        ]
+        if alojamento_unico:
+            celulas_linha += [
+                c_euros(linha["Mínimo/noite (€)"]),
+                f'<span class="ad-forte">{c_euros(linha["Média líquida/noite (€)"])}</span>',
+                c_euros(linha["Máximo/noite (€)"]),
+                c_euros(linha["Potencial ao máximo (€)"], 0),
+                c_euros(linha["Por captar (€)"], 0),
+            ]
+        else:
+            celulas_linha += [
+                f'<span class="ad-forte">{c_euros(linha["Média líquida/noite (€)"])}</span>',
+            ]
+        linhas_noites.append(celulas_linha)
+
+    total_noites = [
+        "Total",
+        h(inteiro(anual["noites"])),
+        c_barra(anual["ocupacao"]),
+        h(inteiro(anual["reservas"])),
+        h(decimal(
+            mensal["Soma durações"].sum() / anual["reservas"]
+            if anual["reservas"] else None
+        )),
     ]
+    if alojamento_unico:
+        total_noites += [
+            c_euros(mensal["Mínimo/noite (€)"].astype(float).min()),
+            c_euros(anual["media_noite"]),
+            c_euros(mensal["Máximo/noite (€)"].astype(float).max()),
+            c_euros(mensal["Potencial ao máximo (€)"].sum(), 0),
+            c_euros(mensal["Por captar (€)"].sum(), 0),
+        ]
+    else:
+        total_noites += [c_euros(anual["media_noite"])]
 
-    st.dataframe(
-        tabela_formatada(analise, {
-            "Total líquido (€)": euros,
-            "Noites": inteiro,
-            "Ocupação (%)": percentagem,
-            "Média líquida/noite (€)": euros,
-            "Reservas": inteiro,
-            "Duração média": decimal,
-            "Taxa utilizada (€)": euros,
-            "Cancelamentos retidos (€)": euros,
-            "Reembolsos (€)": euros,
-            "Total do mês (€)": euros,
-            f"vs {ano_anterior}": texto_variacao,
-        }),
-        hide_index=True,
-        use_container_width=True,
+    tabela_html(
+        cabecalho_noites, linhas_noites, total=total_noites, apagadas=sem_noites,
     )
 
-    st.caption(
-        "Total do mês = total líquido das estadias + cancelamentos retidos "
-        "− reembolsos enviados."
+    figura_media = go.Figure()
+    figura_media.add_bar(
+        x=MESES_CURTOS,
+        y=mensal["Média líquida/noite (€)"],
+        name=f"Média {ano}",
+        marker_color=COR_PRINCIPAL,
+        text=mensal["Média líquida/noite (€)"].map(etiqueta_euros),
+        textposition="outside",
+        cliponaxis=False,
+        hovertemplate="%{y:,.2f} €<extra>Média " + str(ano) + "</extra>",
     )
+    if alojamento_unico:
+        figura_media.add_scatter(
+            x=MESES_CURTOS,
+            y=mensal["Máximo/noite (€)"],
+            name="Melhor noite",
+            mode="markers",
+            marker=dict(color=COR_TEXTO, size=9, symbol="triangle-up"),
+            hovertemplate="%{y:,.2f} €<extra>Melhor noite</extra>",
+        )
+        figura_media.add_scatter(
+            x=MESES_CURTOS,
+            y=mensal["Mínimo/noite (€)"],
+            name="Pior noite",
+            mode="markers",
+            marker=dict(color=COR_SUAVE, size=9, symbol="triangle-down"),
+            hovertemplate="%{y:,.2f} €<extra>Pior noite</extra>",
+        )
+    if mensal_anterior["Noites"].sum() > 0:
+        figura_media.add_scatter(
+            x=MESES_CURTOS,
+            y=mensal_anterior["Média líquida/noite (€)"],
+            name=f"Média {ano_anterior}",
+            mode="lines+markers",
+            line=dict(color=COR_ANTERIOR, width=2.5),
+            hovertemplate="%{y:,.2f} €<extra>Média " + str(ano_anterior) + "</extra>",
+        )
+    mostrar_grafico(estilo_grafico(figura_media, altura=340))
+
+    # ----- 3. Comparação entre alojamentos -----
+
+    if len(selecionados) > 1:
+        seccao(
+            "Rendimento por alojamento e mês",
+            "A cor é mais forte nos melhores meses de cada alojamento.",
+        )
+
+        colunas_alojamento = [
+            mensal_de(listing, ano)["Total líquido (€)"].astype(float)
+            for listing in selecionados
+        ]
+        maximos = [float(max(coluna.max(), 1.0)) for coluna in colunas_alojamento]
+
+        linhas_matriz = []
+        for indice in range(12):
+            linhas_matriz.append(
+                [h(MESES[indice])]
+                + [
+                    c_calor(coluna.iloc[indice], maximo, 0)
+                    for coluna, maximo in zip(colunas_alojamento, maximos)
+                ]
+                + [f'<span class="ad-forte">{c_euros(liquido_atual.iloc[indice], 0)}</span>']
+            )
+
+        tabela_html(
+            ["Mês"]
+            + [propriedades.loc[listing, "Nome"] for listing in selecionados]
+            + ["Total"],
+            linhas_matriz,
+            total=(
+                ["Total"]
+                + [c_euros(coluna.sum(), 0) for coluna in colunas_alojamento]
+                + [c_euros(liquido_atual.sum(), 0)]
+            ),
+            apagadas={
+                indice for indice in range(12) if liquido_atual.iloc[indice] < 0.005
+            },
+        )
+
+    # ----- 4. Taxa turística e outros movimentos -----
+
+    with st.expander("Taxa turística, cancelamentos e reembolsos por mês"):
+        linhas_movimentos = [
+            [
+                h(MESES[indice]),
+                c_euros(mensal["Earnings bruto (€)"].iloc[indice]),
+                c_euros(mensal["Taxa utilizada (€)"].iloc[indice]),
+                c_euros(liquido_atual.iloc[indice]),
+                c_euros(mensal["Cancelamentos retidos (€)"].iloc[indice]),
+                c_euros(mensal["Reembolsos (€)"].iloc[indice]),
+                f'<span class="ad-forte">{c_euros(mensal["Total do mês (€)"].iloc[indice])}</span>',
+            ]
+            for indice in range(12)
+        ]
+        tabela_html(
+            [
+                "Mês", "Recebido do Airbnb", "Taxa turística", "Estadias líquidas",
+                "Cancelamentos retidos", "Reembolsos", "Total do mês",
+            ],
+            linhas_movimentos,
+            total=[
+                "Total",
+                c_euros(mensal["Earnings bruto (€)"].sum()),
+                c_euros(mensal["Taxa utilizada (€)"].sum()),
+                c_euros(liquido_atual.sum()),
+                c_euros(mensal["Cancelamentos retidos (€)"].sum()),
+                c_euros(mensal["Reembolsos (€)"].sum()),
+                c_euros(mensal["Total do mês (€)"].sum()),
+            ],
+            apagadas=sem_dados,
+        )
+        st.caption(
+            "Estadias líquidas = recebido do Airbnb − taxa turística. "
+            "Total do mês = estadias líquidas + cancelamentos retidos − reembolsos."
+        )
 
     st.download_button(
         "Descarregar resumo mensal (CSV)",
@@ -1006,30 +1406,6 @@ with aba_mensal:
         file_name=f"resumo_{ano}.csv",
         mime="text/csv",
     )
-
-    seccao("Média líquida por noite", "O valor que cada noite ocupada rendeu.")
-
-    figura_media = go.Figure()
-    figura_media.add_bar(
-        x=MESES_CURTOS,
-        y=mensal["Média líquida/noite (€)"],
-        name=str(ano),
-        marker_color=COR_PRINCIPAL,
-        text=mensal["Média líquida/noite (€)"].map(etiqueta_euros),
-        textposition="outside",
-        cliponaxis=False,
-        hovertemplate="%{y:,.2f} €<extra>" + str(ano) + "</extra>",
-    )
-    if mensal_anterior["Noites"].sum() > 0:
-        figura_media.add_scatter(
-            x=MESES_CURTOS,
-            y=mensal_anterior["Média líquida/noite (€)"],
-            name=str(ano_anterior),
-            mode="lines+markers",
-            line=dict(color=COR_ANTERIOR, width=2.5),
-            hovertemplate="%{y:,.2f} €<extra>" + str(ano_anterior) + "</extra>",
-        )
-    mostrar_grafico(estilo_grafico(figura_media, altura=320))
 
 
 # =========================================================
@@ -1059,9 +1435,12 @@ with aba_precos:
         )
     with c4:
         comissao_pct = st.number_input(
-            "Comissão Airbnb (%)", min_value=0.0, max_value=20.0, value=3.0,
+            "Comissão Airbnb (%)", min_value=0.0, max_value=30.0, value=15.5,
             step=0.5, key="comissao_pct",
-            help="Comissão de anfitrião descontada pelo Airbnb.",
+            help=(
+                "O preço que publicas já inclui a comissão do Airbnb. "
+                "Com 15,5 %, recebes 84,5 % do preço publicado."
+            ),
         )
 
     ano_plano = int(ano_plano)
@@ -1216,31 +1595,48 @@ with aba_precos:
     mostrar_grafico(estilo_grafico(figura_plano, altura=380))
 
     if plano is not None:
-        tabela_plano = plano[[
-            "Mês", "Objetivo (€)", "Ocupação esperada (%)",
-            "Líquido/noite necessário (€)", "Variação do preço (%)",
-            "Preço mínimo (€)", "Preço de tabela (€)", "Já reservado (€)",
-            "Objetivo atingido (%)",
-        ]]
+        maximo_tabela = float(plano["Preço de tabela (€)"].astype(float).max() or 1.0)
 
-        st.dataframe(
-            tabela_formatada(tabela_plano, {
-                "Objetivo (€)": euros,
-                "Ocupação esperada (%)": percentagem,
-                "Líquido/noite necessário (€)": euros,
-                "Variação do preço (%)": texto_variacao,
-                "Preço mínimo (€)": euros,
-                "Preço de tabela (€)": euros,
-                "Já reservado (€)": euros,
-                "Objetivo atingido (%)": percentagem,
-            }),
-            hide_index=True,
-            use_container_width=True,
+        linhas_plano = []
+        for indice in range(12):
+            linha = plano.iloc[indice]
+            linhas_plano.append([
+                h(linha["Mês"]),
+                h(linha["Referência"]),
+                c_euros(linha["Líquido/noite referência (€)"]),
+                c_euros(linha["Máximo/noite referência (€)"]),
+                c_euros(linha["Objetivo (€)"], 0),
+                h(percentagem(linha["Ocupação esperada (%)"], 0)),
+                f'<span class="ad-forte">{c_euros(linha["Líquido/noite necessário (€)"])}</span>',
+                c_variacao(linha["Variação do preço (%)"]),
+                c_euros(linha["Preço mínimo (€)"], 0),
+                c_calor(linha["Preço de tabela (€)"], maximo_tabela, 0),
+                c_barra(linha["Objetivo atingido (%)"], rosa=True)
+                if linha["Já reservado (€)"] > 0 else "—",
+            ])
+
+        tabela_html(
+            [
+                "Mês", "Referência", "Média ref.", "Melhor noite ref.",
+                "Objetivo", "Ocupação", "Líquido necessário",
+                "Subida", "Preço mínimo", "Preço de tabela", "Já reservado",
+            ],
+            linhas_plano,
+            total=[
+                "Total", "", "", "",
+                c_euros(objetivo_total, 0), "", "", "", "", "",
+                c_barra(atingido, rosa=True),
+            ],
+            apagadas={
+                indice for indice in range(12)
+                if pd.isna(plano["Objetivo (€)"].astype(float).iloc[indice])
+            },
         )
 
         st.caption(
             "Líquido/noite necessário = objetivo ÷ noites esperadas. "
-            f"Preço mínimo = esse valor antes da comissão de {decimal(comissao_pct)} % "
+            f"Preço mínimo = esse valor ÷ {decimal(100 - comissao_pct)} %, porque o "
+            f"Airbnb fica com {decimal(comissao_pct)} % do preço publicado "
             "(abaixo disto o mês não atinge o objetivo). "
             f"Preço de tabela = preço a publicar para que, com {desconto_pct} % "
             "de desconto, ainda fiques no preço mínimo. "
@@ -1254,21 +1650,39 @@ with aba_precos:
         )
 
         cenarios = core.cenarios_desconto(plano)
-        visivel = cenarios[["Mês"]].copy()
-        visivel["Preço de tabela"] = cenarios["Preço de tabela (€)"].map(euros)
-        for coluna in cenarios.columns:
-            if not coluna.startswith("−"):
-                continue
-            visivel[coluna] = [
-                "—" if pd.isna(valor)
-                else euros(valor) + (" ⚠" if valor < minimo - 0.005 else "")
-                for valor, minimo in zip(
-                    cenarios[coluna], cenarios["Preço mínimo (€)"],
-                )
-            ]
-        visivel["Preço mínimo"] = cenarios["Preço mínimo (€)"].map(euros)
+        colunas_desconto = [
+            coluna for coluna in cenarios.columns if coluna.startswith("−")
+        ]
 
-        st.dataframe(visivel, hide_index=True, use_container_width=True)
+        linhas_cenarios = []
+        for indice in range(12):
+            linha = cenarios.iloc[indice]
+            minimo = linha["Preço mínimo (€)"]
+            celulas_linha = [
+                h(linha["Mês"]),
+                f'<span class="ad-forte">{c_euros(linha["Preço de tabela (€)"], 0)}</span>',
+            ]
+            for coluna in colunas_desconto:
+                valor = linha[coluna]
+                if pd.isna(valor):
+                    celulas_linha.append("—")
+                elif valor < minimo - 0.005:
+                    celulas_linha.append(
+                        f'<span class="ad-menos">{h(euros(valor, 0))} ⚠</span>'
+                    )
+                else:
+                    celulas_linha.append(h(euros(valor, 0)))
+            celulas_linha.append(c_euros(minimo, 0))
+            linhas_cenarios.append(celulas_linha)
+
+        tabela_html(
+            ["Mês", "Preço de tabela"] + colunas_desconto + ["Preço mínimo"],
+            linhas_cenarios,
+            apagadas={
+                indice for indice in range(12)
+                if pd.isna(cenarios["Preço de tabela (€)"].astype(float).iloc[indice])
+            },
+        )
 
         st.download_button(
             f"Descarregar plano {ano_plano} (CSV)",
@@ -1284,24 +1698,29 @@ with aba_precos:
         linhas_objetivo = []
         for listing, plano_listing in planos.items():
             objetivo = float(plano_listing["Objetivo (€)"].sum())
+            referencia = float(plano_listing["Rendimento referência (€)"].sum())
             reservado = float(plano_listing["Já reservado (€)"].sum())
-            linhas_objetivo.append({
-                "Alojamento": propriedades.loc[listing, "Nome"],
-                "Proprietário": propriedades.loc[listing, "Proprietário"],
-                "Referência": euros(
-                    float(plano_listing["Rendimento referência (€)"].sum())
-                ),
-                f"Objetivo {ano_plano}": euros(objetivo),
-                "Já reservado": euros(reservado),
-                "Atingido": percentagem(
-                    100 * reservado / objetivo if objetivo else None
-                ),
-            })
+            linhas_objetivo.append([
+                imagem_html(propriedades.loc[listing, "Nome"], "ad-miniatura")
+                + " " + h(propriedades.loc[listing, "Nome"]),
+                h(propriedades.loc[listing, "Proprietário"]),
+                c_euros(referencia, 0),
+                f'<span class="ad-forte">{c_euros(objetivo, 0)}</span>',
+                c_euros(reservado, 0),
+                c_barra(100 * reservado / objetivo if objetivo else None, rosa=True),
+            ])
 
-        st.dataframe(
-            pd.DataFrame(linhas_objetivo),
-            hide_index=True,
-            use_container_width=True,
+        tabela_html(
+            [
+                "Alojamento", "Proprietário", "Referência",
+                f"Objetivo {ano_plano}", "Já reservado", "Atingido",
+            ],
+            linhas_objetivo,
+            total=[
+                "Total", "", c_euros(referencia_total, 0),
+                c_euros(objetivo_total, 0), c_euros(reservado_total, 0),
+                c_barra(atingido, rosa=True),
+            ],
         )
         st.info(
             "Escolhe um alojamento na barra lateral para ver os preços por "
@@ -1509,12 +1928,17 @@ with aba_reconciliacao:
             },
         ])
 
-        st.dataframe(
-            tabela_formatada(
-                tabela_rec, {coluna: euros for coluna in colunas_valor},
-            ),
-            hide_index=True,
-            use_container_width=True,
+        tabela_html(
+            ["Alojamento", "Proprietário"] + colunas_valor,
+            [
+                [h(linha["Alojamento"]), h(linha["Proprietário"])]
+                + [c_euros(linha[coluna]) for coluna in colunas_valor[:-1]]
+                + [f'<span class="ad-forte">{c_euros(linha[colunas_valor[-1]])}</span>']
+                for _, linha in tabela_rec.iterrows()
+            ],
+            total=["Total", ""] + [
+                c_euros(tabela_rec[coluna].sum()) for coluna in colunas_valor
+            ],
         )
         st.info(
             "Escolhe um alojamento na barra lateral para registar reembolsos "
@@ -1609,8 +2033,8 @@ with aba_taxa:
             linhas_taxa.append({
                 "Alojamento": propriedades.loc[listing, "Nome"],
                 "Proprietário": propriedades.loc[listing, "Proprietário"],
-                "Taxa automática": euros(resumo_taxa["Taxa automática (€)"].sum()),
-                "Taxa utilizada": euros(resumo_taxa["Taxa utilizada (€)"].sum()),
+                "Taxa automática": resumo_taxa["Taxa automática (€)"].sum(),
+                "Taxa utilizada": resumo_taxa["Taxa utilizada (€)"].sum(),
             })
 
         cartoes([
@@ -1620,8 +2044,16 @@ with aba_taxa:
                 "nota": h(f"{len(selecionados)} alojamentos"),
             },
         ])
-        st.dataframe(
-            pd.DataFrame(linhas_taxa), hide_index=True, use_container_width=True,
+        tabela_html(
+            ["Alojamento", "Proprietário", "Estimativa automática", "Taxa utilizada"],
+            [
+                [
+                    h(linha["Alojamento"]), h(linha["Proprietário"]),
+                    c_euros(linha["Taxa automática"]),
+                    f'<span class="ad-forte">{c_euros(linha["Taxa utilizada"])}</span>',
+                ]
+                for linha in linhas_taxa
+            ],
         )
         st.info(
             "Escolhe um alojamento na barra lateral para editar os valores "
@@ -1647,7 +2079,11 @@ with aba_taxa:
 
 with aba_dados:
 
-    seccao("Alojamentos", "Dá um nome curto a cada anúncio e indica de quem é.")
+    seccao(
+        "Alojamentos",
+        "Dá um nome curto a cada anúncio e indica de quem é. A foto é "
+        "escolhida pelo início do nome curto (T2, T1+1, T0, T1).",
+    )
 
     cartoes([
         {"rotulo": "Reservas guardadas", "valor": inteiro(len(dados)), "nota": ""},
@@ -1720,6 +2156,7 @@ with aba_dados:
 - Os cancelamentos que ficaram com valor e os reembolsos enviados aparecem à parte, no total do mês e na reconciliação.
 - A ocupação divide as noites ocupadas pelos dias em que o alojamento já estava à venda (desde a primeira noite reservada).
 - Antes de 2026 a taxa turística considerada é 0 €. O ajuste manual de um mês substitui o cálculo automático.
+- A comissão do Airbnb (15,5 % por omissão) está incluída no preço publicado: o preço mínimo do plano é o líquido necessário ÷ 84,5 %.
 - O plano de preços usa como referência o mesmo mês do ano anterior; se esse mês ainda não acabou, usa o do ano antes quando rendeu mais.
 - Nomes e contactos dos hóspedes não são guardados.
 """

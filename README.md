@@ -14,6 +14,7 @@ preços de vários alojamentos no Airbnb, por proprietário.
 | `supabase/001_alojamentos_e_reembolsos.sql` | Tabelas `properties` e `monthly_adjustments` |
 | `.github/workflows/supabase-keepalive.yml` | Mantém o Supabase ativo e faz backup diário |
 | `backups/` | Backup em CSV das tabelas (sem dados pessoais) |
+| `assets/` | Foto de cada alojamento; o ficheiro tem o início do nome curto (`t2.jpg`, `t1+1.jpg`, `t0.jpg`, `t1.jpg`) |
 
 ## Correr localmente (Codespaces)
 
@@ -46,6 +47,9 @@ uv run python tests/smoke_app.py
 - Os indicadores excluem a taxa turística e as reservas canceladas.
 - Cancelamentos com valor retido e reembolsos enviados entram no "total do mês"
   e na reconciliação, não na média por noite.
+- A importação aceita datas em mês/dia/ano e dia/mês/ano (depende do idioma
+  da conta Airbnb) e ignora reservas antigas que venham sem valor.
+- A comissão do Airbnb (15,5 % por omissão) está incluída no preço publicado.
 - Plano de preços: objetivo mensal = mês de referência × (1 + crescimento);
   preço mínimo = líquido por noite ÷ (1 − comissão); preço de tabela =
   preço mínimo ÷ (1 − desconto médio).
