@@ -1,0 +1,77 @@
+# Corre todos os dias: lê as tabelas do Supabase (o que mantém o projeto
+# gratuito ativo) e guarda um backup em CSV no repositório quando os dados mudam.
+#
+# Requer dois secrets no repositório (Settings > Secrets and variables > Actions):
+#   SUPABASE_URL  -> o URL do projeto, ex. https://xxxx.supabase.co
+#   SUPABASE_KEY  -> a mesma secret key que está nos Streamlit Secrets
+
+name: Supabase keep-alive e backup
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # todos os dias às 06:17 UTC
+  workflow_dispatch: # permite correr à mão no separador Actions
+
+permissions:
+  contents: write
+
+concurrency:
+  group: supabase-keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ler tabelas do Supabase
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_KEY:-}" ]; then
+            echo "Faltam os secrets SUPABASE_URL e/ou SUPABASE_KEY." >&2
+            exit 1
+          fi
+          mkdir -p backups
+
+          export_table() {
+            local table="$1" order="$2" tmp
+            tmp="$(mktemp)"
+            curl -fsS "${SUPABASE_URL%/}/rest/v1/${table}?select=*&order=${order}" \
+              -H "apikey: ${SUPABASE_KEY}" \
+              -H "Authorization: Bearer ${SUPABASE_KEY}" \
+              -H "Accept: text/csv" \
+              -o "$tmp"
+            local rows=$(( $(wc -l < "$tmp") - 1 ))
+            echo "${table}: ${rows} linhas"
+            echo "$tmp"
+          }
+
+          res_tmp="$(export_table reservations listing,confirmation_code | tee /dev/stderr | tail -n 1)"
+          tax_tmp="$(export_table tourist_tax_monthly listing,tax_year,tax_month | tee /dev/stderr | tail -n 1)"
+
+          # Nunca substituir um backup bom por um ficheiro vazio.
+          if [ "$(wc -l < "$res_tmp")" -lt 2 ]; then
+            echo "A tabela reservations veio vazia; backup não atualizado." >&2
+            exit 1
+          fi
+
+          mv "$res_tmp" backups/reservations.csv
+          mv "$tax_tmp" backups/tourist_tax_monthly.csv
+
+      - name: Guardar backup se os dados mudaram
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backups
+          if git diff --cached --quiet; then
+            echo "Sem alterações nos dados."
+          else
+            git commit -m "Backup Supabase $(date -u +%F)"
+            git push
+          fi
