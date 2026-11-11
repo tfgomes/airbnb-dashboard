@@ -38,30 +38,39 @@ jobs:
           fi
           mkdir -p backups
 
-          export_table() {
-            local table="$1" order="$2" tmp
+          # exportar <tabela> <ordenação> <obrigatoria|opcional>
+          exportar() {
+            local tabela="$1" ordem="$2" tipo="$3" tmp
             tmp="$(mktemp)"
-            curl -fsS "${SUPABASE_URL%/}/rest/v1/${table}?select=*&order=${order}" \
+            if ! curl -fsS "${SUPABASE_URL%/}/rest/v1/${tabela}?select=*&order=${ordem}" \
               -H "apikey: ${SUPABASE_KEY}" \
               -H "Authorization: Bearer ${SUPABASE_KEY}" \
               -H "Accept: text/csv" \
-              -o "$tmp"
-            local rows=$(( $(wc -l < "$tmp") - 1 ))
-            echo "${table}: ${rows} linhas"
-            echo "$tmp"
+              -o "$tmp"; then
+              if [ "$tipo" = "opcional" ]; then
+                echo "${tabela}: ainda não existe, ignorada"
+                return 0
+              fi
+              echo "Não foi possível ler ${tabela}." >&2
+              return 1
+            fi
+            # grep -c conta também a última linha sem quebra final.
+            local linhas
+            linhas="$(grep -c '' "$tmp" || true)"
+            local registos=$(( linhas > 0 ? linhas - 1 : 0 ))
+            echo "${tabela}: ${registos} registos"
+            # Nunca substituir um backup bom por um ficheiro vazio.
+            if [ "$tipo" = "obrigatoria" ] && [ "$registos" -lt 1 ]; then
+              echo "A tabela ${tabela} veio vazia; backup não atualizado." >&2
+              return 1
+            fi
+            mv "$tmp" "backups/${tabela}.csv"
           }
 
-          res_tmp="$(export_table reservations listing,confirmation_code | tee /dev/stderr | tail -n 1)"
-          tax_tmp="$(export_table tourist_tax_monthly listing,tax_year,tax_month | tee /dev/stderr | tail -n 1)"
-
-          # Nunca substituir um backup bom por um ficheiro vazio.
-          if [ "$(wc -l < "$res_tmp")" -lt 2 ]; then
-            echo "A tabela reservations veio vazia; backup não atualizado." >&2
-            exit 1
-          fi
-
-          mv "$res_tmp" backups/reservations.csv
-          mv "$tax_tmp" backups/tourist_tax_monthly.csv
+          exportar reservations listing,confirmation_code obrigatoria
+          exportar tourist_tax_monthly listing,tax_year,tax_month opcional
+          exportar properties listing opcional
+          exportar monthly_adjustments listing,adj_year,adj_month opcional
 
       - name: Guardar backup se os dados mudaram
         run: |

@@ -1,0 +1,130 @@
+"""Testes dos cálculos com os dados reais do backup (sem dados pessoais)."""
+
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+import core
+
+RAIZ = Path(__file__).resolve().parents[1]
+HOJE = pd.Timestamp("2026-11-11")
+LISTING = "Apartamento Moderno c/Piscina, a 12 min da Praia"
+TAXAS_2026 = {4: 44, 5: 134, 6: 158, 7: 84, 8: 240, 9: 126}
+
+
+@pytest.fixture(scope="module")
+def reservas():
+    registos = pd.read_csv(RAIZ / "backups" / "reservations.csv").to_dict("records")
+    return core.registos_para_dataframe(registos)
+
+
+@pytest.fixture(scope="module")
+def noites(reservas):
+    return core.criar_noites(reservas[~reservas["Cancelada"]])
+
+
+def ajustes():
+    return {mes: {"valor": float(valor), "notes": ""} for mes, valor in TAXAS_2026.items()}
+
+
+def test_noites_somam_o_valor_das_reservas(reservas, noites):
+    ativas = reservas[~reservas["Cancelada"]]
+    assert len(noites) == ativas["Noites"].sum()
+    assert round(noites["Valor bruto"].sum() * 100) == ativas["Cêntimos"].sum()
+    assert not noites.duplicated(subset=["Listing", "Data"]).any()
+
+
+def test_resumo_2026_bate_com_o_dashboard_atual(reservas, noites):
+    mensal, _ = core.resumo_mensal(reservas, noites, 2026, ajustes(), HOJE)
+    anual = core.resumo_anual(mensal, 2026, HOJE)
+
+    assert anual["noites"] == 298
+    assert anual["taxa"] == pytest.approx(950.00, abs=0.005)
+    assert anual["liquido"] == pytest.approx(30909.75, abs=0.005)
+    assert anual["realizado"] == pytest.approx(30390.84, abs=0.011)
+    assert anual["futuro"] == pytest.approx(518.91, abs=0.011)
+    assert anual["media_noite"] == pytest.approx(103.72, abs=0.005)
+    # 289 noites realizadas em 314 dias decorridos.
+    assert anual["ocupacao"] == pytest.approx(100 * 289 / 314, abs=0.01)
+
+    agosto = mensal.iloc[7]
+    assert agosto["Earnings bruto (€)"] == pytest.approx(7160.30, abs=0.005)
+    assert agosto["Total líquido (€)"] == pytest.approx(6920.30, abs=0.005)
+    assert agosto["Ocupação (%)"] == 100
+
+
+def test_cancelamento_retido_e_reembolso(reservas, noites):
+    reembolsos = {9: {"valor": 240.0, "notes": "Matas"}}
+    mensal, _ = core.resumo_mensal(reservas, noites, 2026, ajustes(), HOJE, reembolsos)
+    setembro = mensal.iloc[8]
+
+    assert setembro["Cancelamentos retidos (€)"] == pytest.approx(308.70)
+    assert setembro["Reembolsos (€)"] == 240.0
+    assert setembro["Total do mês (€)"] == pytest.approx(
+        setembro["Total líquido (€)"] + 68.70
+    )
+
+    rec = core.reconciliacao(reservas, 2026, 950.0, 240.0)
+    assert rec["total_csv"] == pytest.approx(32168.45, abs=0.005)
+    assert rec["ativas"] == pytest.approx(31859.75, abs=0.005)
+    assert rec["final"] == pytest.approx(32168.45 - 240 - 950, abs=0.005)
+
+
+def test_2025_sem_taxa_e_capacidade_desde_a_primeira_noite(reservas, noites):
+    mensal, _ = core.resumo_mensal(reservas, noites, 2025, {}, HOJE)
+    assert mensal["Taxa utilizada (€)"].sum() == 0
+    assert mensal.iloc[0]["Dias disponíveis"] == 0      # janeiro: ainda não existia
+    assert mensal.iloc[6]["Dias disponíveis"] == 16     # julho: desde dia 16
+    assert mensal.iloc[7]["Dias disponíveis"] == 31
+
+
+def test_agregar_dois_alojamentos_duplica_os_totais(reservas, noites):
+    mensal, _ = core.resumo_mensal(reservas, noites, 2026, ajustes(), HOJE)
+    total = core.agregar_mensal([mensal, mensal])
+
+    assert total["Total líquido (€)"].sum() == pytest.approx(2 * 30909.75, abs=0.01)
+    assert total["Noites"].sum() == 2 * 298
+    # Os rácios mantêm-se iguais aos de um só alojamento.
+    assert total.iloc[7]["Ocupação (%)"] == 100
+    assert total.iloc[7]["Média líquida/noite (€)"] == pytest.approx(
+        mensal.iloc[7]["Média líquida/noite (€)"]
+    )
+
+
+def test_plano_de_precos_mais_dez_por_cento(reservas, noites):
+    base, _ = core.resumo_mensal(reservas, noites, 2026, ajustes(), HOJE)
+    anterior, _ = core.resumo_mensal(reservas, noites, 2025, {}, HOJE)
+    reservado, _ = core.resumo_mensal(reservas, noites, 2027, {}, HOJE)
+
+    plano = core.plano_precos(
+        base, anterior, reservado, 2027, HOJE,
+        crescimento=0.10, comissao=0.03, desconto=0.10,
+    )
+    agosto = plano.iloc[7]
+
+    assert agosto["Referência"] == "2026"
+    assert agosto["Objetivo (€)"] == pytest.approx(6920.30 * 1.10, abs=0.01)
+    # Ocupação já a 100 %: os 10 % têm de vir todos do preço.
+    assert agosto["Variação do preço (%)"] == pytest.approx(10.0, abs=0.01)
+    liquido = 6920.30 * 1.10 / 31
+    assert agosto["Líquido/noite necessário (€)"] == pytest.approx(liquido, abs=0.01)
+    assert agosto["Preço mínimo (€)"] == pytest.approx(liquido / 0.97, abs=0.01)
+    assert agosto["Preço de tabela (€)"] == pytest.approx(liquido / 0.97 / 0.90, abs=0.01)
+
+    # Dezembro de 2026 ainda não tem reservas: usa dezembro de 2025.
+    dezembro = plano.iloc[11]
+    assert dezembro["Referência"] == "2025"
+    assert dezembro["Rendimento referência (€)"] == pytest.approx(604.21, abs=0.01)
+
+    # Mais ocupação esperada => preço necessário mais baixo.
+    plano_b = core.plano_precos(
+        base, anterior, reservado, 2027, HOJE, ocupacoes={1: 90.0},
+    )
+    assert (
+        plano_b.iloc[0]["Líquido/noite necessário (€)"]
+        < plano.iloc[0]["Líquido/noite necessário (€)"]
+    )
+
+    cenarios = core.cenarios_desconto(plano)
+    assert cenarios.iloc[7]["−10 %"] == pytest.approx(agosto["Preço mínimo (€)"], abs=0.01)

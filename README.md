@@ -1,25 +1,51 @@
-# 🎈 Blank app template
+# Painel de Alojamentos
 
-A simple Streamlit app template for you to modify!
+Aplicação privada em Streamlit para acompanhar o rendimento, a ocupação e os
+preços de vários alojamentos no Airbnb, por proprietário.
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+## Estrutura
 
-### How to run it on your own machine
+| Ficheiro | Para que serve |
+|---|---|
+| `streamlit_app.py` | Interface e leitura/escrita no Supabase |
+| `core.py` | Todos os cálculos (sem Streamlit), para poderem ser testados |
+| `tests/test_core.py` | Testes dos cálculos com os dados reais de `backups/` |
+| `tests/smoke_app.py` | Corre a app inteira com Streamlit/Plotly/Supabase simulados |
+| `supabase/001_alojamentos_e_reembolsos.sql` | Tabelas `properties` e `monthly_adjustments` |
+| `.github/workflows/supabase-keepalive.yml` | Mantém o Supabase ativo e faz backup diário |
+| `backups/` | Backup em CSV das tabelas (sem dados pessoais) |
 
-Prerequisite: install `uv` if you don't already have it.
+## Correr localmente (Codespaces)
 
 ```
-$ curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync
+uv run streamlit run streamlit_app.py
 ```
 
-1. Sync the dependencies
+É preciso o ficheiro `.streamlit/secrets.toml` (nunca vai para o Git):
 
-   ```
-   $ uv sync
-   ```
+```
+[supabase]
+url = "SUPABASE_PROJECT_URL"
+key = "SUPABASE_SECRET_KEY"
+```
 
-2. Run the app
+## Antes de publicar
 
-   ```
-   $ uv run streamlit run streamlit_app.py
-   ```
+```
+uv run python -m py_compile streamlit_app.py core.py
+uv run --with pytest pytest -q tests
+uv run python tests/smoke_app.py
+```
+
+## Regras principais
+
+- Chave de uma reserva: anúncio + código de confirmação.
+- O valor da reserva é repartido de forma igual pelas noites; cada noite conta
+  no mês em que acontece.
+- Os indicadores excluem a taxa turística e as reservas canceladas.
+- Cancelamentos com valor retido e reembolsos enviados entram no "total do mês"
+  e na reconciliação, não na média por noite.
+- Plano de preços: objetivo mensal = mês de referência × (1 + crescimento);
+  preço mínimo = líquido por noite ÷ (1 − comissão); preço de tabela =
+  preço mínimo ÷ (1 − desconto médio).
