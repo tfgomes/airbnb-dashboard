@@ -1,11 +1,22 @@
-import calendar
+import html
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from supabase import create_client
+
+import core
+from core import (
+    MESES,
+    MESES_CURTOS,
+    euros,
+    etiqueta_euros,
+    percentagem,
+    texto_variacao,
+    variacao,
+)
 
 
 # =========================================================
@@ -13,592 +24,310 @@ from supabase import create_client
 # =========================================================
 
 st.set_page_config(
-    page_title="Airbnb Dashboard",
+    page_title="Painel de Alojamentos",
     page_icon="🏠",
     layout="wide",
 )
 
-MESES = [
-    "Janeiro",
-    "Fevereiro",
-    "Março",
-    "Abril",
-    "Maio",
-    "Junho",
-    "Julho",
-    "Agosto",
-    "Setembro",
-    "Outubro",
-    "Novembro",
-    "Dezembro",
-]
+HOJE = pd.Timestamp(datetime.now(ZoneInfo("Europe/Lisbon")).date())
 
-HOJE = pd.Timestamp(
-    datetime.now(
-        ZoneInfo("Europe/Lisbon")
-    ).date()
+PROPRIETARIOS = ["Tiago", "Guilhermino"]
+TODOS = "Todos"
+TODOS_ALOJAMENTOS = "Todos os alojamentos"
+
+COR_PRINCIPAL = "#E61E4D"
+COR_FUTURO = "#FFB8C6"
+COR_ANTERIOR = "#92174D"
+COR_NEUTRA = "#DDDDDD"
+COR_TEXTO = "#222222"
+COR_SUAVE = "#6A6A6A"
+COR_GRELHA = "#EBEBEB"
+
+COLUNAS_RESERVAS = (
+    "listing,confirmation_code,status,start_date,end_date,"
+    "nights,adults,children,infants,earnings_cents"
 )
 
-VALOR_TAXA_POR_PESSOA_NOITE = 2.00
-MAXIMO_NOITES_TAXADAS_POR_RESERVA = 7
-INICIO_TAXA = pd.Timestamp("2026-04-01")
+SQL_CONFIGURACAO = """-- Correr uma vez no Supabase: SQL Editor > New query > Run
+
+create table if not exists public.properties (
+    listing text primary key,
+    display_name text,
+    owner text,
+    updated_at timestamptz not null default now()
+);
+
+create table if not exists public.monthly_adjustments (
+    listing text not null,
+    adj_year integer not null,
+    adj_month integer not null check (adj_month between 1 and 12),
+    refund_cents bigint not null default 0 check (refund_cents >= 0),
+    notes text,
+    updated_at timestamptz not null default now(),
+    primary key (listing, adj_year, adj_month)
+);
+
+alter table public.properties enable row level security;
+alter table public.monthly_adjustments enable row level security;
+
+grant select, insert, update, delete on public.properties to service_role;
+grant select, insert, update, delete on public.monthly_adjustments to service_role;
+"""
 
 
 # =========================================================
-# LIGAÇÃO AO SUPABASE
+# ESTILO
 # =========================================================
 
-try:
-    supabase = create_client(
+ESTILO = """
+<style>
+html, body, [class*="css"], .stMarkdown, .stApp {
+    font-family: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+.block-container { padding-top: 2.2rem; padding-bottom: 4rem; max-width: 1280px; }
+section[data-testid="stSidebar"] { background: #FAFAFA; border-right: 1px solid #EBEBEB; }
+.ad-marca { font-size: 1.15rem; font-weight: 700; color: #E61E4D; letter-spacing: -0.01em; margin-bottom: 0.2rem; }
+.ad-marca-nota { font-size: 0.78rem; color: #6A6A6A; margin-bottom: 1rem; }
+.ad-titulo { font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; color: #222222; line-height: 1.15; margin: 0; }
+.ad-subtitulo { font-size: 0.95rem; color: #6A6A6A; margin: 0.35rem 0 1.2rem 0; }
+.ad-seccao { font-size: 1.25rem; font-weight: 650; color: #222222; letter-spacing: -0.01em; margin: 1.8rem 0 0.2rem 0; }
+.ad-seccao-nota { font-size: 0.86rem; color: #6A6A6A; margin: 0 0 0.8rem 0; }
+.ad-grelha { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin: 0.6rem 0 0.4rem 0; }
+.ad-cartao { background: #FFFFFF; border: 1px solid #EBEBEB; border-radius: 18px; padding: 18px 20px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+.ad-cartao.destaque { background: linear-gradient(135deg, #E61E4D 0%, #D70466 60%, #92174D 100%); border: none; }
+.ad-cartao.destaque .ad-rotulo, .ad-cartao.destaque .ad-nota { color: rgba(255,255,255,0.85); }
+.ad-cartao.destaque .ad-valor { color: #FFFFFF; }
+.ad-cartao.destaque .ad-sobe, .ad-cartao.destaque .ad-desce { color: #FFFFFF; }
+.ad-rotulo { font-size: 0.8rem; color: #6A6A6A; margin-bottom: 6px; }
+.ad-valor { font-size: 1.65rem; font-weight: 700; color: #222222; letter-spacing: -0.02em; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.ad-nota { font-size: 0.8rem; color: #6A6A6A; margin-top: 6px; }
+.ad-sobe { color: #008A05; font-weight: 600; }
+.ad-desce { color: #C13515; font-weight: 600; }
+.ad-linha { display: flex; align-items: center; gap: 14px; padding: 14px 0; border-bottom: 1px solid #EBEBEB; }
+.ad-linha:last-child { border-bottom: none; }
+.ad-linha-nome { flex: 0 0 34%; min-width: 0; }
+.ad-linha-nome b { display: block; font-size: 0.95rem; color: #222222; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-linha-nome span { font-size: 0.78rem; color: #6A6A6A; }
+.ad-linha-barra { flex: 1 1 auto; height: 6px; background: #F0F0F0; border-radius: 999px; overflow: hidden; }
+.ad-linha-barra i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #E61E4D, #D70466); }
+.ad-linha-valor { flex: 0 0 auto; text-align: right; font-variant-numeric: tabular-nums; }
+.ad-linha-valor b { display: block; font-size: 0.95rem; color: #222222; }
+.ad-linha-valor span { font-size: 0.78rem; color: #6A6A6A; }
+.ad-progresso { height: 8px; background: #F0F0F0; border-radius: 999px; overflow: hidden; margin-top: 10px; }
+.ad-progresso i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #E61E4D, #D70466); }
+.stTabs [data-baseweb="tab-list"] { gap: 6px; border-bottom: 1px solid #EBEBEB; }
+.stTabs [data-baseweb="tab"] { font-weight: 600; padding: 10px 14px; }
+div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] { border-radius: 14px; }
+</style>
+"""
+
+st.markdown(ESTILO, unsafe_allow_html=True)
+
+
+def h(texto):
+    return html.escape(str(texto))
+
+
+def seccao(titulo, nota=None):
+    bloco = f'<div class="ad-seccao">{h(titulo)}</div>'
+    if nota:
+        bloco += f'<div class="ad-seccao-nota">{h(nota)}</div>'
+    st.markdown(bloco, unsafe_allow_html=True)
+
+
+def cartoes(itens):
+    """itens: lista de dicionários com rotulo, valor, nota (HTML já seguro) e destaque."""
+    partes = []
+    for item in itens:
+        classe = "ad-cartao destaque" if item.get("destaque") else "ad-cartao"
+        nota = item.get("nota") or ""
+        partes.append(
+            f'<div class="{classe}">'
+            f'<div class="ad-rotulo">{h(item["rotulo"])}</div>'
+            f'<div class="ad-valor">{h(item["valor"])}</div>'
+            f'<div class="ad-nota">{nota}</div>'
+            "</div>"
+        )
+    st.markdown(
+        '<div class="ad-grelha">' + "".join(partes) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def nota_variacao(valor, sufixo):
+    """Texto colorido para uma variação percentual."""
+    if valor is None or pd.isna(valor):
+        return h(sufixo)
+    classe = "ad-sobe" if valor >= 0 else "ad-desce"
+    return f'<span class="{classe}">{h(texto_variacao(valor))}</span> {h(sufixo)}'
+
+
+def barras_alojamentos(linhas):
+    """linhas: lista de (nome, legenda, valor). Barras proporcionais ao total."""
+    total = sum(max(valor, 0) for _, _, valor in linhas)
+    partes = []
+    for nome, legenda, valor in linhas:
+        quota = 100 * max(valor, 0) / total if total else 0
+        partes.append(
+            '<div class="ad-linha">'
+            f'<div class="ad-linha-nome"><b>{h(nome)}</b><span>{h(legenda)}</span></div>'
+            f'<div class="ad-linha-barra"><i style="width:{quota:.1f}%"></i></div>'
+            f'<div class="ad-linha-valor"><b>{h(euros(valor))}</b>'
+            f"<span>{h(percentagem(quota))}</span></div>"
+            "</div>"
+        )
+    st.markdown(
+        '<div class="ad-cartao">' + "".join(partes) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def estilo_grafico(figura, altura=380):
+    figura.update_layout(
+        height=altura,
+        margin=dict(t=30, r=10, b=10, l=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(
+            family="Inter, Helvetica Neue, Arial, sans-serif",
+            color=COR_TEXTO,
+            size=13,
+        ),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+            title_text="",
+        ),
+        hovermode="x unified",
+        bargap=0.28,
+        separators=",.",
+    )
+    figura.update_xaxes(showgrid=False, linecolor=COR_GRELHA, tickfont=dict(color=COR_SUAVE))
+    figura.update_yaxes(
+        gridcolor=COR_GRELHA, zeroline=False, tickfont=dict(color=COR_SUAVE),
+    )
+    return figura
+
+
+def mostrar_grafico(figura):
+    st.plotly_chart(
+        figura, use_container_width=True, config={"displayModeBar": False},
+    )
+
+
+def tabela_formatada(tabela, formatos):
+    """Aplica formatos PT a uma cópia da tabela, para mostrar."""
+    visivel = tabela.copy()
+    for coluna, formato in formatos.items():
+        if coluna in visivel.columns:
+            visivel[coluna] = visivel[coluna].map(formato)
+    return visivel
+
+
+def inteiro(valor):
+    if valor is None or pd.isna(valor):
+        return "—"
+    return f"{float(valor):.0f}"
+
+
+def decimal(valor):
+    if valor is None or pd.isna(valor):
+        return "—"
+    return f"{float(valor):.1f}".replace(".", ",")
+
+
+# =========================================================
+# SUPABASE
+# =========================================================
+
+@st.cache_resource
+def ligar_supabase():
+    return create_client(
         st.secrets["supabase"]["url"],
         st.secrets["supabase"]["key"],
     )
 
+
+try:
+    supabase = ligar_supabase()
 except Exception as erro:
-    st.error(
-        "Não foi possível configurar a ligação ao Supabase."
-    )
+    st.error("Não foi possível configurar a ligação ao Supabase.")
     st.code(str(erro))
     st.stop()
 
 
-# =========================================================
-# FORMATAÇÃO
-# =========================================================
-
-def euros(valor):
-    if valor is None or pd.isna(valor):
-        return "—"
-
-    texto = f"{float(valor):,.2f}"
-
-    return (
-        texto
-        .replace(",", "X")
-        .replace(".", ",")
-        .replace("X", ".")
-        + " €"
-    )
-
-
-def etiqueta_euros(valor):
-    if (
-        valor is None
-        or pd.isna(valor)
-        or abs(float(valor)) < 0.005
-    ):
-        return ""
-
-    return (
-        f"{float(valor):,.0f}"
-        .replace(",", ".")
-        + " €"
-    )
-
-
-def converter_earnings_para_centimos(valor):
-    texto = (
-        str(valor)
-        .strip()
-        .replace("€", "")
-        .replace(" ", "")
-        .replace(",", "")
-    )
-
-    if not texto:
-        raise ValueError(
-            "Foi encontrado um valor Earnings vazio."
-        )
-
-    try:
-        return int(
-            round(float(texto) * 100)
-        )
-
-    except ValueError as erro:
-        raise ValueError(
-            f"Valor Earnings inválido: {valor}"
-        ) from erro
-
-
-# =========================================================
-# PREPARAR CSV
-# =========================================================
-
-def preparar_csv(ficheiro):
-
-    dados = pd.read_csv(
-        ficheiro,
-        dtype=str,
-        encoding="utf-8-sig",
-        skipinitialspace=True,
-    )
-
-    dados.columns = (
-        dados.columns
-        .str.strip()
-    )
-
-    obrigatorias = [
-        "Confirmation code",
-        "Status",
-        "Start date",
-        "End date",
-        "# of nights",
-        "# of adults",
-        "# of children",
-        "# of infants",
-        "Earnings",
-        "Listing",
-    ]
-
-    falta = [
-        coluna
-        for coluna in obrigatorias
-        if coluna not in dados.columns
-    ]
-
-    if falta:
-        raise ValueError(
-            f"Colunas em falta em {ficheiro.name}: "
-            + ", ".join(falta)
-        )
-
-    # Excluir nomes, contactos e outros dados pessoais.
-    dados = dados[
-        obrigatorias
-    ].copy()
-
-    for coluna in dados.columns:
-        dados[coluna] = (
-            dados[coluna]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
-
-    campos_vazios = (
-        dados["Listing"].eq("")
-        | dados["Confirmation code"].eq("")
-        | dados["Status"].eq("")
-    )
-
-    if campos_vazios.any():
-        raise ValueError(
-            f"Existem registos sem Listing, código "
-            f"ou estado em {ficheiro.name}."
-        )
-
-    dados["Entrada"] = pd.to_datetime(
-        dados["Start date"],
-        format="%m/%d/%Y",
-        errors="coerce",
-    )
-
-    dados["Saída"] = pd.to_datetime(
-        dados["End date"],
-        format="%m/%d/%Y",
-        errors="coerce",
-    )
-
-    dados["Noites"] = pd.to_numeric(
-        dados["# of nights"],
-        errors="coerce",
-    )
-
-    dados["Adultos"] = pd.to_numeric(
-        dados["# of adults"],
-        errors="coerce",
-    ).fillna(0).astype(int)
-
-    dados["Crianças"] = pd.to_numeric(
-        dados["# of children"],
-        errors="coerce",
-    ).fillna(0).astype(int)
-
-    dados["Bebés"] = pd.to_numeric(
-        dados["# of infants"],
-        errors="coerce",
-    ).fillna(0).astype(int)
-
-    dados["Total hóspedes"] = (
-        dados["Adultos"]
-        + dados["Crianças"]
-        + dados["Bebés"]
-    )
-
-    contagens_invalidas = (
-        (
-            dados[
-                [
-                    "Adultos",
-                    "Crianças",
-                    "Bebés",
-                ]
-            ] < 0
-        ).any(axis=1)
-        | dados["Total hóspedes"].le(0)
-    )
-
-    if contagens_invalidas.any():
-        raise ValueError(
-            f"Existem quantidades de hóspedes "
-            f"inválidas em {ficheiro.name}."
-        )
-
-    dados["Cêntimos"] = (
-        dados["Earnings"]
-        .map(
-            converter_earnings_para_centimos
-        )
-    )
-
-    dados["Valor bruto"] = (
-        dados["Cêntimos"]
-        / 100
-    )
-
-    noites_calculadas = (
-        dados["Saída"]
-        - dados["Entrada"]
-    ).dt.days
-
-    invalidas = (
-        dados["Entrada"].isna()
-        | dados["Saída"].isna()
-        | dados["Noites"].isna()
-        | noites_calculadas.le(0)
-        | dados["Noites"].ne(
-            noites_calculadas
-        )
-    )
-
-    if invalidas.any():
-        raise ValueError(
-            f"Existem {int(invalidas.sum())} reservas "
-            f"com datas ou noites inválidas "
-            f"em {ficheiro.name}."
-        )
-
-    dados["Noites"] = (
-        dados["Noites"]
-        .astype(int)
-    )
-
-    dados["Cancelada"] = (
-        dados["Status"]
-        .str.contains(
-            r"cancel",
-            case=False,
-            na=False,
-        )
-    )
-
-    return dados.drop_duplicates()
-
-
-# =========================================================
-# JUNTAR VÁRIOS CSV
-# =========================================================
-
-def preparar_lote_csv(ficheiros):
-
-    tabelas = [
-        preparar_csv(ficheiro)
-        for ficheiro in ficheiros
-    ]
-
-    lote = pd.concat(
-        tabelas,
-        ignore_index=True,
-    )
-
-    chave = [
-        "Listing",
-        "Confirmation code",
-    ]
-
-    comparar = [
-        "Status",
-        "Start date",
-        "End date",
-        "# of nights",
-        "# of adults",
-        "# of children",
-        "# of infants",
-        "Earnings",
-    ]
-
-    repetidas = lote[
-        lote.duplicated(
-            subset=chave,
-            keep=False,
-        )
-    ]
-
-    if not repetidas.empty:
-
-        conflitos = (
-            repetidas
-            .groupby(
-                chave,
-                dropna=False,
-            )[comparar]
-            .nunique(
-                dropna=False
-            )
-            .gt(1)
-            .any(axis=1)
-        )
-
-        if conflitos.any():
-
-            exemplos = (
-                conflitos[
-                    conflitos
-                ]
-                .reset_index()
-                .head(10)
-                .apply(
-                    lambda linha: (
-                        f"{linha['Listing']} / "
-                        f"{linha['Confirmation code']}"
-                    ),
-                    axis=1,
-                )
-                .tolist()
-            )
-
-            raise ValueError(
-                "Foram encontradas versões diferentes "
-                "da mesma reserva: "
-                + ", ".join(exemplos)
-            )
-
-    return (
-        lote
-        .drop_duplicates(
-            subset=chave,
-            keep="last",
-        )
-        .reset_index(drop=True)
-    )
-
-
-# =========================================================
-# CONVERTER PARA SUPABASE
-# =========================================================
-
-def dataframe_para_registos(dados):
-
-    agora = datetime.now(
-        ZoneInfo("Europe/Lisbon")
-    ).isoformat()
-
-    registos = []
-
-    for _, linha in dados.iterrows():
-
-        registos.append({
-            "listing": str(
-                linha["Listing"]
-            ).strip(),
-
-            "confirmation_code": str(
-                linha["Confirmation code"]
-            ).strip(),
-
-            "status": str(
-                linha["Status"]
-            ).strip(),
-
-            "start_date": (
-                linha["Entrada"]
-                .date()
-                .isoformat()
-            ),
-
-            "end_date": (
-                linha["Saída"]
-                .date()
-                .isoformat()
-            ),
-
-            "nights": int(
-                linha["Noites"]
-            ),
-
-            "adults": int(
-                linha["Adultos"]
-            ),
-
-            "children": int(
-                linha["Crianças"]
-            ),
-
-            "infants": int(
-                linha["Bebés"]
-            ),
-
-            "earnings_cents": int(
-                linha["Cêntimos"]
-            ),
-
-            "updated_at": agora,
-        })
-
-    return registos
-
-
-# =========================================================
-# LEITURA GENÉRICA SUPABASE
-# =========================================================
-
-def ler_tabela(nome, colunas):
-
+def ler_paginas(nome, colunas):
     todos = []
     inicio = 0
     tamanho_pagina = 1000
 
     while True:
-
         resposta = (
-            supabase
-            .table(nome)
+            supabase.table(nome)
             .select(colunas)
-            .range(
-                inicio,
-                inicio
-                + tamanho_pagina
-                - 1,
-            )
+            .range(inicio, inicio + tamanho_pagina - 1)
             .execute()
         )
-
-        bloco = (
-            resposta.data
-            or []
-        )
-
-        todos.extend(
-            bloco
-        )
-
+        bloco = resposta.data or []
+        todos.extend(bloco)
         if len(bloco) < tamanho_pagina:
             return todos
-
         inicio += tamanho_pagina
 
 
-# =========================================================
-# GUARDAR RESERVAS
-# =========================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def ler_tabela(nome, colunas):
+    return ler_paginas(nome, colunas)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def ler_tabela_opcional(nome, colunas):
+    """Devolve None quando a tabela ainda não existe (ou não pôde ser lida)."""
+    try:
+        return ler_paginas(nome, colunas)
+    except Exception:
+        return None
+
+
+def limpar_cache():
+    st.cache_data.clear()
+
+
+def agora_iso():
+    return datetime.now(ZoneInfo("Europe/Lisbon")).isoformat()
+
 
 def guardar_reservas(dados):
-
-    novos_registos = (
-        dataframe_para_registos(
-            dados
-        )
-    )
-
-    existentes = ler_tabela(
-        "reservations",
-        (
-            "listing,"
-            "confirmation_code,"
-            "status,"
-            "start_date,"
-            "end_date,"
-            "nights,"
-            "adults,"
-            "children,"
-            "infants,"
-            "earnings_cents"
-        ),
-    )
+    novos_registos = core.dataframe_para_registos(dados, agora_iso())
+    existentes = ler_paginas("reservations", COLUNAS_RESERVAS)
 
     indice = {
-        (
-            registo["listing"],
-            registo["confirmation_code"],
-        ): registo
+        (registo["listing"], registo["confirmation_code"]): registo
         for registo in existentes
     }
-
     campos = [
-        "status",
-        "start_date",
-        "end_date",
-        "nights",
-        "adults",
-        "children",
-        "infants",
-        "earnings_cents",
+        "status", "start_date", "end_date", "nights",
+        "adults", "children", "infants", "earnings_cents",
     ]
 
-    novos = []
-    alterados = []
-    iguais = []
+    novos, alterados, iguais = [], [], []
 
     for registo in novos_registos:
-
-        chave = (
-            registo["listing"],
-            registo["confirmation_code"],
-        )
-
-        atual = indice.get(
-            chave
-        )
-
+        atual = indice.get((registo["listing"], registo["confirmation_code"]))
         if atual is None:
-
-            novos.append(
-                registo
-            )
-
-        elif all(
-            str(registo[campo])
-            == str(atual[campo])
-            for campo in campos
-        ):
-
-            iguais.append(
-                registo
-            )
-
+            novos.append(registo)
+        elif all(str(registo[campo]) == str(atual[campo]) for campo in campos):
+            iguais.append(registo)
         else:
+            alterados.append(registo)
 
-            alterados.append(
-                registo
-            )
+    para_gravar = novos + alterados
 
-    para_gravar = (
-        novos
-        + alterados
-    )
-
-    for inicio in range(
-        0,
-        len(para_gravar),
-        200,
-    ):
-
-        bloco = para_gravar[
-            inicio:
-            inicio + 200
-        ]
-
+    for inicio in range(0, len(para_gravar), 200):
         (
-            supabase
-            .table("reservations")
+            supabase.table("reservations")
             .upsert(
-                bloco,
-                on_conflict=(
-                    "listing,"
-                    "confirmation_code"
-                ),
+                para_gravar[inicio:inicio + 200],
+                on_conflict="listing,confirmation_code",
             )
             .execute()
         )
@@ -610,786 +339,152 @@ def guardar_reservas(dados):
     }
 
 
-# =========================================================
-# CARREGAR RESERVAS
-# =========================================================
+def guardar_ajustes_taxa(listing, ano, editor):
+    agora = agora_iso()
 
-def carregar_reservas():
-
-    registos = ler_tabela(
-        "reservations",
-        (
-            "listing,"
-            "confirmation_code,"
-            "status,"
-            "start_date,"
-            "end_date,"
-            "nights,"
-            "adults,"
-            "children,"
-            "infants,"
-            "earnings_cents"
-        ),
-    )
-
-    if not registos:
-        return pd.DataFrame()
-
-    base = pd.DataFrame(
-        registos
-    )
-
-    base["Listing"] = (
-        base["listing"]
-    )
-
-    base["Confirmation code"] = (
-        base["confirmation_code"]
-    )
-
-    base["Status"] = (
-        base["status"]
-    )
-
-    base["Entrada"] = pd.to_datetime(
-        base["start_date"]
-    )
-
-    base["Saída"] = pd.to_datetime(
-        base["end_date"]
-    )
-
-    base["Noites"] = pd.to_numeric(
-        base["nights"]
-    ).astype(int)
-
-    base["Adultos"] = pd.to_numeric(
-        base["adults"]
-    ).fillna(0).astype(int)
-
-    base["Crianças"] = pd.to_numeric(
-        base["children"]
-    ).fillna(0).astype(int)
-
-    base["Bebés"] = pd.to_numeric(
-        base["infants"]
-    ).fillna(0).astype(int)
-
-    base["Total hóspedes"] = (
-        base["Adultos"]
-        + base["Crianças"]
-        + base["Bebés"]
-    )
-
-    base["Cêntimos"] = pd.to_numeric(
-        base["earnings_cents"]
-    ).astype(int)
-
-    base["Valor bruto"] = (
-        base["Cêntimos"]
-        / 100
-    )
-
-    base["Cancelada"] = (
-        base["Status"]
-        .str.contains(
-            r"cancel",
-            case=False,
-            na=False,
-        )
-    )
-
-    return base
-
-
-# =========================================================
-# AJUSTES MANUAIS DA TAXA TURÍSTICA
-# =========================================================
-
-def carregar_ajustes(listing, ano):
-
-    resposta = (
-        supabase
-        .table(
-            "tourist_tax_monthly"
-        )
-        .select(
-            "tax_month,"
-            "manual_tax_cents,"
-            "notes"
-        )
-        .eq(
-            "listing",
-            listing,
-        )
-        .eq(
-            "tax_year",
-            int(ano),
-        )
-        .execute()
-    )
-
-    return {
-        int(registo["tax_month"]): {
-            "valor": (
-                int(
-                    registo[
-                        "manual_tax_cents"
-                    ]
-                )
-                / 100
-            ),
-            "notes": (
-                registo.get(
-                    "notes"
-                )
-                or ""
-            ),
-        }
-        for registo
-        in (
-            resposta.data
-            or []
-        )
-    }
-
-
-def guardar_ajustes(
-    listing,
-    ano,
-    editor,
-):
-
-    agora = datetime.now(
-        ZoneInfo("Europe/Lisbon")
-    ).isoformat()
-
-    for indice, linha in (
-        editor.iterrows()
-    ):
-
+    for indice, linha in editor.reset_index(drop=True).iterrows():
         mes = indice + 1
-
-        valor = linha[
-            "Ajuste manual (€)"
-        ]
+        valor = linha["Ajuste manual (€)"]
 
         if pd.isna(valor):
-
             (
-                supabase
-                .table(
-                    "tourist_tax_monthly"
-                )
+                supabase.table("tourist_tax_monthly")
                 .delete()
-                .eq(
-                    "listing",
-                    listing,
-                )
-                .eq(
-                    "tax_year",
-                    int(ano),
-                )
-                .eq(
-                    "tax_month",
-                    mes,
-                )
+                .eq("listing", listing)
+                .eq("tax_year", int(ano))
+                .eq("tax_month", mes)
                 .execute()
             )
-
         else:
-
+            notas = linha.get("Notas", "")
             (
-                supabase
-                .table(
-                    "tourist_tax_monthly"
-                )
+                supabase.table("tourist_tax_monthly")
                 .upsert(
                     {
                         "listing": listing,
                         "tax_year": int(ano),
                         "tax_month": mes,
-                        "manual_tax_cents": int(
-                            round(
-                                float(valor)
-                                * 100
-                            )
-                        ),
-                        "notes": str(
-                            linha.get(
-                                "Notas",
-                                "",
-                            )
-                            or ""
-                        ),
+                        "manual_tax_cents": int(round(float(valor) * 100)),
+                        "notes": "" if pd.isna(notas) else str(notas or ""),
                         "updated_at": agora,
                     },
-                    on_conflict=(
-                        "listing,"
-                        "tax_year,"
-                        "tax_month"
-                    ),
+                    on_conflict="listing,tax_year,tax_month",
                 )
                 .execute()
             )
 
 
-# =========================================================
-# REGRA AUTOMÁTICA DA TAXA
-# =========================================================
+def guardar_reembolsos(listing, ano, editor):
+    agora = agora_iso()
 
-def data_tem_taxa(data):
+    for indice, linha in editor.reset_index(drop=True).iterrows():
+        mes = indice + 1
+        valor = linha["Reembolso (€)"]
 
-    if data < INICIO_TAXA:
-        return False
-
-    return (
-        4
-        <= data.month
-        <= 10
-    )
-
-
-# =========================================================
-# CRIAR NOITES
-# =========================================================
-
-def criar_noites(reservas):
-
-    linhas = []
-
-    for _, reserva in (
-        reservas.iterrows()
-    ):
-
-        datas = pd.date_range(
-            reserva["Entrada"],
-            reserva["Saída"],
-            inclusive="left",
-        )
-
-        if len(datas) == 0:
-            continue
-
-        total_centimos = int(
-            reserva["Cêntimos"]
-        )
-
-        sinal = (
-            -1
-            if total_centimos < 0
-            else 1
-        )
-
-        base_centimos, resto = divmod(
-            abs(total_centimos),
-            len(datas),
-        )
-
-        hospedes = int(
-            reserva[
-                "Total hóspedes"
-            ]
-        )
-
-        noites_taxadas = 0
-
-        for posicao, data in (
-            enumerate(datas)
-        ):
-
-            valor_bruto = (
-                (
-                    base_centimos
-                    + int(
-                        posicao < resto
-                    )
-                )
-                * sinal
-                / 100
-            )
-
-            elegivel = (
-                data_tem_taxa(data)
-                and noites_taxadas
-                < MAXIMO_NOITES_TAXADAS_POR_RESERVA
-            )
-
-            if elegivel:
-
-                taxa_automatica = (
-                    hospedes
-                    * VALOR_TAXA_POR_PESSOA_NOITE
-                )
-
-                noites_taxadas += 1
-
-            else:
-
-                taxa_automatica = 0.0
-
-            linhas.append({
-                "Listing": (
-                    reserva["Listing"]
-                ),
-                "Reserva": (
-                    reserva[
-                        "Confirmation code"
-                    ]
-                ),
-                "Data": data,
-                "Valor bruto": (
-                    valor_bruto
-                ),
-                "Taxa automática": (
-                    taxa_automatica
-                ),
-                "Duração reserva": (
-                    len(datas)
-                ),
-                "Hóspedes": hospedes,
-            })
-
-    return pd.DataFrame(
-        linhas
-    )
-
-
-# =========================================================
-# APLICAR TAXA MENSAL
-# =========================================================
-
-def aplicar_taxa_mensal(
-    noites,
-    ano,
-    ajustes,
-):
-
-    resultado = noites.copy()
-
-    resultado[
-        "Taxa final"
-    ] = 0.0
-
-    resultado[
-        "Origem taxa"
-    ] = "Não aplicável"
-
-    if int(ano) < 2026:
-
-        resultado[
-            "Valor líquido"
-        ] = resultado[
-            "Valor bruto"
-        ]
-
-        return resultado
-
-    for mes in range(
-        1,
-        13,
-    ):
-
-        mascara = (
+        if pd.isna(valor) or float(valor) <= 0:
             (
-                resultado["Data"]
-                .dt.year
-                == int(ano)
+                supabase.table("monthly_adjustments")
+                .delete()
+                .eq("listing", listing)
+                .eq("adj_year", int(ano))
+                .eq("adj_month", mes)
+                .execute()
             )
-            &
-            (
-                resultado["Data"]
-                .dt.month
-                == mes
-            )
-        )
-
-        quantidade_noites = int(
-            mascara.sum()
-        )
-
-        if quantidade_noites == 0:
-            continue
-
-        valor_automatico = float(
-            resultado.loc[
-                mascara,
-                "Taxa automática",
-            ].sum()
-        )
-
-        if mes in ajustes:
-
-            taxa_final = float(
-                ajustes[mes][
-                    "valor"
-                ]
-            )
-
-            origem = "Manual"
-
         else:
-
-            taxa_final = (
-                valor_automatico
-            )
-
-            origem = (
-                "Automático"
-                if valor_automatico > 0
-                else "Não aplicável"
-            )
-
-        # Distribuir o total mensal em cêntimos
-        # pelas noites do mês.
-        centimos_taxa = int(
-            round(
-                taxa_final
-                * 100
-            )
-        )
-
-        base_centimos, resto = (
-            divmod(
-                centimos_taxa,
-                quantidade_noites,
-            )
-        )
-
-        valores_distribuidos = [
+            notas = linha.get("Notas", "")
             (
-                base_centimos
-                + int(
-                    índice < resto
+                supabase.table("monthly_adjustments")
+                .upsert(
+                    {
+                        "listing": listing,
+                        "adj_year": int(ano),
+                        "adj_month": mes,
+                        "refund_cents": int(round(float(valor) * 100)),
+                        "notes": "" if pd.isna(notas) else str(notas or ""),
+                        "updated_at": agora,
+                    },
+                    on_conflict="listing,adj_year,adj_month",
                 )
-            )
-            / 100
-            for índice
-            in range(
-                quantidade_noites
-            )
-        ]
-
-        resultado.loc[
-            mascara,
-            "Taxa final",
-        ] = valores_distribuidos
-
-        resultado.loc[
-            mascara,
-            "Origem taxa",
-        ] = origem
-
-    resultado[
-        "Valor líquido"
-    ] = (
-        resultado[
-            "Valor bruto"
-        ]
-        - resultado[
-            "Taxa final"
-        ]
-    )
-
-    return resultado
-
-
-# =========================================================
-# RESUMO MENSAL
-# =========================================================
-
-def resumo_mensal(
-    noites,
-    ano,
-    ajustes,
-):
-
-    ano_noites = noites[
-        noites["Data"]
-        .dt.year
-        == int(ano)
-    ].copy()
-
-    ano_noites = aplicar_taxa_mensal(
-        ano_noites,
-        ano,
-        ajustes,
-    )
-
-    linhas = []
-
-    for mes in range(
-        1,
-        13,
-    ):
-
-        periodo = ano_noites[
-            ano_noites["Data"]
-            .dt.month
-            == mes
-        ]
-
-        dias_mes = calendar.monthrange(
-            int(ano),
-            mes,
-        )[1]
-
-        realizadas = periodo[
-            periodo["Data"]
-            < HOJE
-        ]
-
-        futuras = periodo[
-            periodo["Data"]
-            >= HOJE
-        ]
-
-        valor_bruto = (
-            periodo[
-                "Valor bruto"
-            ].sum()
-        )
-
-        taxa_automatica = (
-            periodo[
-                "Taxa automática"
-            ].sum()
-        )
-
-        taxa_utilizada = (
-            periodo[
-                "Taxa final"
-            ].sum()
-        )
-
-        valor_liquido = (
-            periodo[
-                "Valor líquido"
-            ].sum()
-        )
-
-        noites_mes = len(
-            periodo
-        )
-
-        reservas_mes = (
-            periodo[
-                "Reserva"
-            ]
-            .nunique()
-        )
-
-        if noites_mes:
-
-            origem = (
-                periodo[
-                    "Origem taxa"
-                ]
-                .iloc[0]
+                .execute()
             )
 
-        elif (
-            int(ano) < 2026
-            or mes < 4
-            or mes > 10
-        ):
 
-            origem = (
-                "Não aplicável"
-            )
+def guardar_propriedades(editor):
+    agora = agora_iso()
+    registos = []
 
-        elif mes in ajustes:
-
-            origem = "Manual"
-
-        else:
-
-            origem = "Automático"
-
-        linhas.append({
-            "Mês": (
-                MESES[
-                    mes - 1
-                ]
-            ),
-
-            "Earnings bruto (€)": (
-                valor_bruto
-            ),
-
-            "Taxa automática (€)": (
-                taxa_automatica
-            ),
-
-            "Ajuste manual (€)": (
-                ajustes
-                .get(
-                    mes,
-                    {},
-                )
-                .get(
-                    "valor",
-                    None,
-                )
-            ),
-
-            "Taxa utilizada (€)": (
-                taxa_utilizada
-            ),
-
-            "Origem": origem,
-
-            "Realizado líquido (€)": (
-                realizadas[
-                    "Valor líquido"
-                ].sum()
-            ),
-
-            "Futuro líquido (€)": (
-                futuras[
-                    "Valor líquido"
-                ].sum()
-            ),
-
-            "Total líquido (€)": (
-                valor_liquido
-            ),
-
-            "Reservas": (
-                reservas_mes
-            ),
-
-            "Noites": (
-                noites_mes
-            ),
-
-            "Dias do mês": (
-                dias_mes
-            ),
-
-            "Ocupação (%)": (
-                100
-                * noites_mes
-                / dias_mes
-            ),
-
-            "Duração média": (
-                periodo
-                .drop_duplicates(
-                    "Reserva"
-                )[
-                    "Duração reserva"
-                ]
-                .mean()
-            ),
-
-            "Média líquida/noite (€)": (
-                valor_liquido
-                / noites_mes
-                if noites_mes
-                else None
-            ),
-
-            "Valor líquido/dia calendário (€)": (
-                valor_liquido
-                / dias_mes
-            ),
+    for _, linha in editor.iterrows():
+        nome = linha["Nome curto"]
+        nome = "" if pd.isna(nome) else str(nome).strip()
+        dono = linha["Proprietário"]
+        dono = PROPRIETARIOS[0] if pd.isna(dono) or not str(dono).strip() else str(dono)
+        registos.append({
+            "listing": linha["Anúncio no Airbnb"],
+            "display_name": nome or linha["Anúncio no Airbnb"],
+            "owner": dono,
+            "updated_at": agora,
         })
 
-    return (
-        pd.DataFrame(
-            linhas
-        ),
-        ano_noites,
-    )
+    supabase.table("properties").upsert(registos, on_conflict="listing").execute()
+
+
+def indexar_mensal(registos, ano_campo, mes_campo, valor_campo):
+    """{(listing, ano): {mês: {"valor": euros, "notes": texto}}}"""
+    indice = {}
+    for registo in registos or []:
+        chave = (registo["listing"], int(registo[ano_campo]))
+        indice.setdefault(chave, {})[int(registo[mes_campo])] = {
+            "valor": int(registo[valor_campo]) / 100,
+            "notes": registo.get("notes") or "",
+        }
+    return indice
 
 
 # =========================================================
-# CABEÇALHO
+# BARRA LATERAL: IMPORTAÇÃO
 # =========================================================
 
-st.title(
-    "🏠 Airbnb Dashboard"
-)
-
-st.caption(
-    "Desempenho, reconciliação financeira, "
-    "taxa turística e planeamento de preços."
-)
-
-
-# =========================================================
-# IMPORTAÇÃO
-# =========================================================
-
-with st.sidebar:
-
-    st.header(
-        "Dados"
-    )
-
-    ficheiros = st.file_uploader(
-        "CSV de reservas Airbnb",
-        type=[
-            "csv",
-        ],
-        accept_multiple_files=True,
-    )
-
-    if (
-        ficheiros
-        and st.button(
-            "Guardar ou atualizar reservas",
-            type="primary",
-            use_container_width=True,
-        )
-    ):
-
-        try:
-
-            lote = (
-                preparar_lote_csv(
-                    ficheiros
-                )
+def painel_importacao():
+    with st.sidebar:
+        with st.expander("Importar reservas (CSV)"):
+            ficheiros = st.file_uploader(
+                "CSV de reservas Airbnb",
+                type=["csv"],
+                accept_multiple_files=True,
             )
+            if ficheiros and st.button(
+                "Guardar ou atualizar reservas",
+                type="primary",
+                use_container_width=True,
+            ):
+                try:
+                    lote = core.preparar_lote_csv(ficheiros)
+                    st.session_state["importacao"] = guardar_reservas(lote)
+                    limpar_cache()
+                    st.rerun()
+                except Exception as erro:
+                    st.error("Não foi possível importar os ficheiros.")
+                    st.code(str(erro))
 
-            resultado_importacao = (
-                guardar_reservas(
-                    lote
-                )
-            )
-
-            st.session_state[
-                "importacao"
-            ] = resultado_importacao
-
+        if st.button("Atualizar dados", use_container_width=True):
+            limpar_cache()
             st.rerun()
 
-        except Exception as erro:
-
-            st.error(
-                "Não foi possível importar os ficheiros."
-            )
-
-            st.code(
-                str(erro)
-            )
+        st.caption(f"Data de referência: {HOJE:%d/%m/%Y}")
 
 
-if "importacao" in st.session_state:
-
-    resultado = (
-        st.session_state
-        .pop(
-            "importacao"
-        )
+with st.sidebar:
+    st.markdown(
+        '<div class="ad-marca">Painel de Alojamentos</div>'
+        '<div class="ad-marca-nota">Rendimento, ocupação e preços</div>',
+        unsafe_allow_html=True,
     )
 
+if "importacao" in st.session_state:
+    resultado = st.session_state.pop("importacao")
     st.success(
-        "Importação concluída: "
-        f"{resultado['novos']} novas, "
-        f"{resultado['alterados']} atualizadas "
-        f"e {resultado['iguais']} iguais."
+        f"Importação concluída: {resultado['novos']} novas, "
+        f"{resultado['alterados']} atualizadas e {resultado['iguais']} iguais."
     )
 
 
@@ -1398,31 +493,86 @@ if "importacao" in st.session_state:
 # =========================================================
 
 try:
-
-    dados = (
-        carregar_reservas()
+    dados = core.registos_para_dataframe(
+        ler_tabela("reservations", COLUNAS_RESERVAS)
     )
-
+    registos_taxa = ler_tabela(
+        "tourist_tax_monthly",
+        "listing,tax_year,tax_month,manual_tax_cents,notes",
+    )
 except Exception as erro:
-
-    st.error(
-        "Não foi possível ler os dados."
-    )
-
-    st.code(
-        str(erro)
-    )
-
+    st.error("Não foi possível ler os dados.")
+    st.code(str(erro))
     st.stop()
-
 
 if dados.empty:
-
+    painel_importacao()
     st.info(
-        "Ainda não existem reservas guardadas."
+        "Ainda não existem reservas guardadas. "
+        "Importa os CSV do Airbnb na barra lateral."
     )
-
     st.stop()
+
+registos_reembolsos = ler_tabela_opcional(
+    "monthly_adjustments", "listing,adj_year,adj_month,refund_cents,notes",
+)
+registos_propriedades = ler_tabela_opcional(
+    "properties", "listing,display_name,owner",
+)
+
+tem_reembolsos = registos_reembolsos is not None
+tem_propriedades = registos_propriedades is not None
+
+taxas = indexar_mensal(registos_taxa, "tax_year", "tax_month", "manual_tax_cents")
+reembolsos = indexar_mensal(
+    registos_reembolsos, "adj_year", "adj_month", "refund_cents",
+)
+
+listings = sorted(dados["Listing"].unique())
+
+
+def montar_propriedades():
+    """Nome curto e proprietário de cada anúncio (com valores por omissão)."""
+    guardadas = {
+        registo["listing"]: registo for registo in (registos_propriedades or [])
+    }
+    linhas = []
+    usados = set()
+
+    for listing in listings:
+        registo = guardadas.get(listing, {})
+        nome = (registo.get("display_name") or "").strip() or listing
+        dono = (registo.get("owner") or "").strip() or PROPRIETARIOS[0]
+
+        # Nomes curtos repetidos tornariam a escolha ambígua.
+        candidato = nome
+        numero = 2
+        while candidato in usados:
+            candidato = f"{nome} ({numero})"
+            numero += 1
+        usados.add(candidato)
+
+        linhas.append({
+            "Listing": listing,
+            "Nome": candidato,
+            "Proprietário": dono,
+            "Configurado": listing in guardadas,
+        })
+
+    return pd.DataFrame(linhas).set_index("Listing")
+
+
+propriedades = montar_propriedades()
+
+reservas_por_listing = {
+    listing: dados[dados["Listing"] == listing].copy() for listing in listings
+}
+noites_por_listing = {
+    listing: core.criar_noites(
+        reservas_por_listing[listing][~reservas_por_listing[listing]["Cancelada"]]
+    )
+    for listing in listings
+}
 
 
 # =========================================================
@@ -1430,916 +580,945 @@ if dados.empty:
 # =========================================================
 
 with st.sidebar:
-
-    st.success(
-        f"Reservas guardadas: "
-        f"{len(dados)}"
-    )
-
-    alojamento = (
-        st.selectbox(
-            "Alojamento",
-            sorted(
-                dados[
-                    "Listing"
-                ].unique()
-            ),
-        )
-    )
-
-
-dados_alojamento = dados[
-    dados["Listing"]
-    == alojamento
-].copy()
-
-
-ativas = dados_alojamento[
-    ~dados_alojamento[
-        "Cancelada"
+    donos_presentes = [
+        dono for dono in PROPRIETARIOS
+        if (propriedades["Proprietário"] == dono).any()
     ]
-].copy()
-
-
-canceladas = dados_alojamento[
-    dados_alojamento[
-        "Cancelada"
-    ]
-].copy()
-
-
-if ativas.empty:
-
-    st.warning(
-        "Não existem reservas ativas para este alojamento."
+    donos_presentes += sorted(
+        set(propriedades["Proprietário"]) - set(PROPRIETARIOS)
     )
 
-    st.stop()
+    if len(listings) > 1 and len(donos_presentes) > 1:
+        carteira = st.radio("Carteira", [TODOS] + donos_presentes, horizontal=True)
+    else:
+        carteira = TODOS
 
+    if carteira == TODOS:
+        listings_carteira = listings
+    else:
+        listings_carteira = [
+            listing for listing in listings
+            if propriedades.loc[listing, "Proprietário"] == carteira
+        ]
 
-noites = criar_noites(
-    ativas
-)
-
-
-if noites.duplicated(
-    subset=[
-        "Listing",
-        "Data",
+    nomes_carteira = [
+        propriedades.loc[listing, "Nome"] for listing in listings_carteira
     ]
-).any():
 
-    st.error(
-        "Existem reservas sobrepostas neste alojamento."
+    if len(listings_carteira) > 1:
+        escolha = st.selectbox("Alojamento", [TODOS_ALOJAMENTOS] + nomes_carteira)
+    else:
+        escolha = st.selectbox("Alojamento", nomes_carteira)
+
+    if escolha == TODOS_ALOJAMENTOS:
+        selecionados = listings_carteira
+    else:
+        selecionados = [listings_carteira[nomes_carteira.index(escolha)]]
+
+    anos_disponiveis = sorted(
+        {
+            int(ano)
+            for listing in selecionados
+            for ano in noites_por_listing[listing]["Data"].dt.year.unique()
+        },
+        reverse=True,
     )
 
-    st.stop()
-
-
-with st.sidebar:
+    if not anos_disponiveis:
+        st.warning("Não existem reservas ativas nesta seleção.")
+        painel_importacao()
+        st.stop()
 
     ano = st.selectbox(
         "Ano",
-        sorted(
-            noites["Data"]
-            .dt.year
-            .unique(),
-            reverse=True,
+        anos_disponiveis,
+        index=(
+            anos_disponiveis.index(HOJE.year)
+            if HOJE.year in anos_disponiveis else 0
         ),
     )
 
-    st.caption(
-        f"Data de referência: "
-        f"{HOJE:%d/%m/%Y}"
-    )
+painel_importacao()
+
+alojamento_unico = selecionados[0] if len(selecionados) == 1 else None
+ano = int(ano)
+ano_anterior = ano - 1
 
 
 # =========================================================
-# TAXA TURÍSTICA E RESUMOS
+# CÁLCULOS
 # =========================================================
 
-if int(ano) >= 2026:
+_memoria_mensal = {}
 
-    ajustes = carregar_ajustes(
-        alojamento,
-        ano,
+
+def mensal_de(listing, ano_pedido):
+    chave = (listing, int(ano_pedido))
+    if chave not in _memoria_mensal:
+        ajustes = taxas.get(chave, {}) if int(ano_pedido) >= 2026 else {}
+        _memoria_mensal[chave], _ = core.resumo_mensal(
+            reservas_por_listing[listing],
+            noites_por_listing[listing],
+            ano_pedido,
+            ajustes,
+            HOJE,
+            reembolsos.get(chave, {}),
+        )
+    return _memoria_mensal[chave]
+
+
+def mensal_selecao(ano_pedido):
+    return core.agregar_mensal(
+        [mensal_de(listing, ano_pedido) for listing in selecionados]
     )
 
+
+mensal = mensal_selecao(ano)
+mensal_anterior = mensal_selecao(ano_anterior)
+anual = core.resumo_anual(mensal, ano, HOJE)
+
+sobrepostos = [
+    propriedades.loc[listing, "Nome"]
+    for listing in selecionados
+    if noites_por_listing[listing].duplicated(subset=["Listing", "Data"]).any()
+]
+
+
+def meses_comparaveis():
+    """Meses fechados em que o ano anterior esteve à venda o mês inteiro."""
+    meses = []
+    for indice in range(12):
+        mes = indice + 1
+        fechado = (ano, mes) < (HOJE.year, HOJE.month)
+        antes = mensal_anterior.iloc[indice]
+        completo = (
+            antes["Dias disponíveis"] >= antes["Dias do mês"] * len(selecionados)
+        )
+        if fechado and completo and antes["Total líquido (€)"] > 0:
+            meses.append(indice)
+    return meses
+
+
+comparaveis = meses_comparaveis()
+
+if comparaveis:
+    base_atual = float(mensal.iloc[comparaveis]["Total líquido (€)"].sum())
+    base_antes = float(mensal_anterior.iloc[comparaveis]["Total líquido (€)"].sum())
+    crescimento_ano = variacao(base_atual, base_antes)
+    periodo_comparavel = (
+        MESES_CURTOS[comparaveis[0]]
+        if len(comparaveis) == 1
+        else f"{MESES_CURTOS[comparaveis[0]]}–{MESES_CURTOS[comparaveis[-1]]}"
+    )
 else:
-
-    ajustes = {}
-
-
-mensal, ano_noites = resumo_mensal(
-    noites,
-    ano,
-    ajustes,
-)
+    crescimento_ano = None
+    periodo_comparavel = ""
 
 
-ano_anterior = (
-    int(ano) - 1
-)
+# =========================================================
+# CABEÇALHO
+# =========================================================
 
-
-if ano_anterior >= 2026:
-
-    ajustes_anterior = carregar_ajustes(
-        alojamento,
-        ano_anterior,
+if alojamento_unico:
+    titulo = propriedades.loc[alojamento_unico, "Nome"]
+    subtitulo = (
+        f"{propriedades.loc[alojamento_unico, 'Proprietário']} · {ano} · "
+        "valores sem taxa turística"
+    )
+else:
+    titulo = (
+        "Todos os alojamentos" if carteira == TODOS
+        else f"Alojamentos de {carteira}"
+    )
+    subtitulo = (
+        f"{len(selecionados)} alojamentos · {ano} · valores sem taxa turística"
     )
 
-else:
-
-    ajustes_anterior = {}
-
-
-mensal_anterior, _ = resumo_mensal(
-    noites,
-    ano_anterior,
-    ajustes_anterior,
+st.markdown(
+    f'<p class="ad-titulo">{h(titulo)}</p>'
+    f'<p class="ad-subtitulo">{h(subtitulo)}</p>',
+    unsafe_allow_html=True,
 )
 
+if sobrepostos:
+    st.warning(
+        "Existem reservas sobrepostas em: " + ", ".join(sobrepostos)
+        + ". As noites em causa estão a contar a dobrar; confirma os CSV."
+    )
 
-# =========================================================
-# RECONCILIAÇÃO FINANCEIRA
-# =========================================================
-
-# A atribuição ao ano é feita pela data de entrada.
-# É a mesma base usada para selecionar os registos
-# de reconciliação neste dashboard.
-
-dados_ano = dados_alojamento[
-    dados_alojamento[
-        "Entrada"
-    ].dt.year
-    == int(ano)
-].copy()
-
-
-# Todos os montantes positivos de todos os registos,
-# incluindo registos positivos com estado cancelado.
-valores_positivos = (
-    dados_ano.loc[
-        dados_ano[
-            "Valor bruto"
-        ] > 0,
-        "Valor bruto",
-    ].sum()
-)
-
-
-# Montantes negativos são apresentados como
-# valor positivo na linha "reembolsos".
-reembolsos_negativos = abs(
-    dados_ano.loc[
-        dados_ano[
-            "Valor bruto"
-        ] < 0,
-        "Valor bruto",
-    ].sum()
-)
-
-
-# Soma assinada de todos os registos.
-# Os montantes negativos já reduzem este total.
-total_todos_registos_csv = (
-    dados_ano[
-        "Valor bruto"
-    ].sum()
-)
-
-
-# Valores das reservas não canceladas.
-total_reservas_ativas = (
-    dados_ano.loc[
-        ~dados_ano[
-            "Cancelada"
-        ],
-        "Valor bruto",
-    ].sum()
-)
-
-
-# Valores com estado cancelado.
-# Podem ser positivos ou negativos.
-total_registos_cancelados = (
-    dados_ano.loc[
-        dados_ano[
-            "Cancelada"
-        ],
-        "Valor bruto",
-    ].sum()
-)
-
-
-cancelamentos_positivos = (
-    dados_ano.loc[
-        dados_ano[
-            "Cancelada"
-        ]
-        &
-        (
-            dados_ano[
-                "Valor bruto"
-            ] > 0
-        ),
-        "Valor bruto",
-    ].sum()
-)
-
-
-cancelamentos_negativos = abs(
-    dados_ano.loc[
-        dados_ano[
-            "Cancelada"
-        ]
-        &
-        (
-            dados_ano[
-                "Valor bruto"
-            ] < 0
-        ),
-        "Valor bruto",
-    ].sum()
-)
-
-
-taxa_turistica_ano = (
-    mensal[
-        "Taxa utilizada (€)"
-    ].sum()
-)
-
-
-# Fórmula final:
-#
-# valores positivos
-# - reembolsos negativos
-# = total dos CSV
-#
-# total dos CSV
-# - taxa turística
-# = total final líquido
-total_final_liquido = (
-    total_todos_registos_csv
-    - taxa_turistica_ano
-)
-
-
-st.info(
-    "Os indicadores principais excluem a taxa turística. "
-    "A reconciliação financeira inclui todos os registos "
-    "presentes nos CSV, incluindo cancelamentos e valores negativos."
-)
-
-
-# =========================================================
-# TABS
-# =========================================================
+por_configurar = [
+    propriedades.loc[listing, "Nome"]
+    for listing in listings
+    if not propriedades.loc[listing, "Configurado"]
+]
+if tem_propriedades and por_configurar and len(listings) > 1:
+    st.info(
+        "Alojamentos sem proprietário definido (a contar como "
+        f"{PROPRIETARIOS[0]}): " + ", ".join(por_configurar)
+        + ". Define-os no separador Dados."
+    )
 
 (
-    resumo,
-    detalhe,
-    reconciliacao,
-    impostos,
-    precos,
-    qualidade,
-) = st.tabs(
-    [
-        "Resumo anual",
-        "Análise mensal",
-        "Reconciliação",
-        "Taxa turística",
-        "Planeamento de preços",
-        "Dados e regras",
-    ]
-)
+    aba_desempenho,
+    aba_mensal,
+    aba_precos,
+    aba_reconciliacao,
+    aba_taxa,
+    aba_dados,
+) = st.tabs([
+    "Desempenho",
+    "Mensal",
+    "Plano de preços",
+    "Reconciliação",
+    "Taxa turística",
+    "Dados",
+])
 
 
 # =========================================================
-# RESUMO ANUAL
+# DESEMPENHO
 # =========================================================
 
-with resumo:
+with aba_desempenho:
 
-    realizado = mensal[
-        "Realizado líquido (€)"
-    ].sum()
-
-    futuro = mensal[
-        "Futuro líquido (€)"
-    ].sum()
-
-    total_estadias_liquido = mensal[
-        "Total líquido (€)"
-    ].sum()
-
-    numero_noites = len(
-        ano_noites
-    )
-
-    dias_ano = (
-        366
-        if calendar.isleap(
-            int(ano)
+    if crescimento_ano is None:
+        nota_crescimento = h(f"sem meses comparáveis em {ano_anterior}")
+    else:
+        nota_crescimento = nota_variacao(
+            crescimento_ano,
+            f"vs {ano_anterior} ({periodo_comparavel}) · objetivo +10 %",
         )
-        else 365
+
+    duracao = (
+        mensal["Soma durações"].sum() / anual["reservas"]
+        if anual["reservas"] else None
     )
 
-    c1, c2, c3 = st.columns(3)
+    media_antes = core.resumo_anual(mensal_anterior, ano_anterior, HOJE)["media_noite"]
 
-    c1.metric(
-        "Realizado sem taxa",
-        euros(
-            realizado
-        ),
-    )
-
-    c2.metric(
-        "Reservas futuras sem taxa",
-        euros(
-            futuro
-        ),
-    )
-
-    c3.metric(
-        "Total das estadias sem taxa",
-        euros(
-            total_estadias_liquido
-        ),
-    )
-
-    c1, c2, c3 = st.columns(3)
-
-    c1.metric(
-        "Noites reservadas",
-        numero_noites,
-    )
-
-    c2.metric(
-        "Ocupação anual",
-        f"{numero_noites / dias_ano:.1%}",
-    )
-
-    c3.metric(
-        "Média líquida/noite",
-        (
-            euros(
-                total_estadias_liquido
-                / numero_noites
-            )
-            if numero_noites
-            else "—"
-        ),
-    )
-
-
-    distribuicao = mensal.melt(
-        id_vars="Mês",
-        value_vars=[
-            "Realizado líquido (€)",
-            "Futuro líquido (€)",
-        ],
-        var_name="Tipo",
-        value_name="Valor (€)",
-    )
-
-    distribuicao[
-        "Etiqueta"
-    ] = (
-        distribuicao[
-            "Valor (€)"
-        ].map(
-            etiqueta_euros
-        )
-    )
-
-    figura = px.bar(
-        distribuicao,
-        x="Mês",
-        y="Valor (€)",
-        color="Tipo",
-        text="Etiqueta",
-        barmode="stack",
-        title=(
-            f"{ano} · realizado e futuro sem taxa"
-        ),
-        category_orders={
-            "Mês": MESES
+    cartoes([
+        {
+            "rotulo": f"Rendimento líquido {ano}",
+            "valor": euros(anual["liquido"]),
+            "nota": nota_crescimento,
+            "destaque": True,
         },
-        color_discrete_sequence=[
-            "#2563EB",
-            "#93C5FD",
-        ],
+        {
+            "rotulo": "Já realizado",
+            "valor": euros(anual["realizado"]),
+            "nota": h(f"Reservas futuras: {euros(anual['futuro'])}"),
+        },
+        {
+            "rotulo": "Noites reservadas",
+            "valor": inteiro(anual["noites"]),
+            "nota": h(
+                f"{inteiro(anual['reservas'])} reservas · "
+                f"estadia média {decimal(duracao)} noites"
+            ),
+        },
+        {
+            "rotulo": anual["ocupacao_rotulo"],
+            "valor": percentagem(anual["ocupacao"]),
+            "nota": h("noites ocupadas ÷ dias disponíveis"),
+        },
+        {
+            "rotulo": "Média líquida por noite",
+            "valor": euros(anual["media_noite"]),
+            "nota": nota_variacao(
+                variacao(anual["media_noite"], media_antes),
+                f"vs {ano_anterior}",
+            ),
+        },
+    ])
+
+    if anual["cancelamentos"] or anual["reembolsos"]:
+        st.caption(
+            f"Fora das estadias: cancelamentos retidos {euros(anual['cancelamentos'])}, "
+            f"reembolsos enviados {euros(anual['reembolsos'])}. "
+            f"Total do ano com estes movimentos: {euros(anual['total'])}."
+        )
+
+    seccao(
+        "Rendimento por mês",
+        "Cada noite conta no mês em que acontece, mesmo que a reserva "
+        "comece ou acabe noutro mês.",
     )
 
-    figura.update_traces(
-        textposition="outside",
+    figura = go.Figure()
+    figura.add_bar(
+        x=MESES_CURTOS,
+        y=mensal["Realizado líquido (€)"],
+        name="Realizado",
+        marker_color=COR_PRINCIPAL,
+        hovertemplate="%{y:,.0f} €<extra>Realizado</extra>",
+    )
+    figura.add_bar(
+        x=MESES_CURTOS,
+        y=mensal["Futuro líquido (€)"],
+        name="Reservas futuras",
+        marker_color=COR_FUTURO,
+        hovertemplate="%{y:,.0f} €<extra>Reservas futuras</extra>",
+    )
+    figura.add_scatter(
+        x=MESES_CURTOS,
+        y=mensal["Total líquido (€)"],
+        mode="text",
+        text=mensal["Total líquido (€)"].map(etiqueta_euros),
+        textposition="top center",
+        textfont=dict(size=11, color=COR_SUAVE),
+        showlegend=False,
+        hoverinfo="skip",
         cliponaxis=False,
     )
+    if mensal_anterior["Total líquido (€)"].sum() > 0:
+        figura.add_scatter(
+            x=MESES_CURTOS,
+            y=mensal_anterior["Total líquido (€)"],
+            name=str(ano_anterior),
+            mode="lines+markers",
+            line=dict(color=COR_ANTERIOR, width=2.5, shape="spline", smoothing=0.6),
+            marker=dict(size=6),
+            hovertemplate="%{y:,.0f} €<extra>" + str(ano_anterior) + "</extra>",
+        )
+    figura.update_layout(barmode="stack")
+    mostrar_grafico(estilo_grafico(figura, altura=400))
 
-    figura.update_layout(
-        uniformtext_minsize=9,
-        uniformtext_mode="hide",
-        margin=dict(
-            t=80,
-            r=30,
-            b=50,
-            l=50,
+    if len(selecionados) > 1:
+        seccao("Rendimento por alojamento", f"Rendimento líquido de {ano}.")
+
+        linhas_alojamentos = []
+        for listing in selecionados:
+            resumo_listing = core.resumo_anual(mensal_de(listing, ano), ano, HOJE)
+            linhas_alojamentos.append((
+                propriedades.loc[listing, "Nome"],
+                f"{propriedades.loc[listing, 'Proprietário']} · "
+                f"{inteiro(resumo_listing['noites'])} noites · "
+                f"ocupação {percentagem(resumo_listing['ocupacao'])}",
+                resumo_listing["liquido"],
+            ))
+        linhas_alojamentos.sort(key=lambda linha: linha[2], reverse=True)
+        barras_alojamentos(linhas_alojamentos)
+
+        if carteira == TODOS and len(donos_presentes) > 1:
+            seccao("Rendimento por proprietário")
+            linhas_donos = []
+            for dono in donos_presentes:
+                do_dono = [
+                    listing for listing in selecionados
+                    if propriedades.loc[listing, "Proprietário"] == dono
+                ]
+                if not do_dono:
+                    continue
+                resumo_dono = core.resumo_anual(
+                    core.agregar_mensal([mensal_de(l, ano) for l in do_dono]),
+                    ano, HOJE,
+                )
+                linhas_donos.append((
+                    dono,
+                    f"{len(do_dono)} alojamento(s) · "
+                    f"{inteiro(resumo_dono['noites'])} noites",
+                    resumo_dono["liquido"],
+                ))
+            barras_alojamentos(linhas_donos)
+
+    seccao("Ocupação por mês", "Noites ocupadas em cada mês, em percentagem.")
+
+    figura_ocupacao = go.Figure()
+    figura_ocupacao.add_bar(
+        x=MESES_CURTOS,
+        y=mensal["Ocupação (%)"],
+        name=str(ano),
+        marker_color=COR_TEXTO,
+        text=mensal["Ocupação (%)"].map(
+            lambda valor: "" if pd.isna(valor) or valor == 0 else f"{valor:.0f}%"
         ),
+        textposition="outside",
+        cliponaxis=False,
+        hovertemplate="%{y:.1f} %<extra>" + str(ano) + "</extra>",
     )
-
-    st.plotly_chart(
-        figura,
-        use_container_width=True,
-    )
-
-
-    tem_ano_anterior = (
-        noites["Data"]
-        .dt.year
-        .eq(
-            int(ano) - 1
+    if mensal_anterior["Noites"].sum() > 0:
+        figura_ocupacao.add_scatter(
+            x=MESES_CURTOS,
+            y=mensal_anterior["Ocupação (%)"],
+            name=str(ano_anterior),
+            mode="lines+markers",
+            line=dict(color=COR_ANTERIOR, width=2, dash="dot"),
+            hovertemplate="%{y:.1f} %<extra>" + str(ano_anterior) + "</extra>",
         )
-        .any()
-    )
-
-    if tem_ano_anterior:
-
-        comparacao = pd.concat(
-            [
-                mensal[
-                    [
-                        "Mês",
-                        "Total líquido (€)",
-                    ]
-                ]
-                .rename(
-                    columns={
-                        "Total líquido (€)":
-                            "Valor (€)"
-                    }
-                )
-                .assign(
-                    Ano=str(
-                        ano
-                    )
-                ),
-
-                mensal_anterior[
-                    [
-                        "Mês",
-                        "Total líquido (€)",
-                    ]
-                ]
-                .rename(
-                    columns={
-                        "Total líquido (€)":
-                            "Valor (€)"
-                    }
-                )
-                .assign(
-                    Ano=str(
-                        int(ano)
-                        - 1
-                    )
-                ),
-            ],
-            ignore_index=True,
-        )
-
-        comparacao[
-            "Etiqueta"
-        ] = (
-            comparacao[
-                "Valor (€)"
-            ].map(
-                etiqueta_euros
-            )
-        )
-
-        figura_comparacao = px.bar(
-            comparacao,
-            x="Mês",
-            y="Valor (€)",
-            color="Ano",
-            text="Etiqueta",
-            barmode="group",
-            title=(
-                "Comparação mensal líquida"
-            ),
-            category_orders={
-                "Mês": MESES
-            },
-            color_discrete_sequence=[
-                "#2563EB",
-                "#CBD5E1",
-            ],
-        )
-
-        figura_comparacao.update_traces(
-            textposition="outside",
-            cliponaxis=False,
-        )
-
-        figura_comparacao.update_layout(
-            uniformtext_minsize=9,
-            uniformtext_mode="hide",
-            margin=dict(
-                t=80,
-                r=30,
-                b=50,
-                l=50,
-            ),
-        )
-
-        st.plotly_chart(
-            figura_comparacao,
-            use_container_width=True,
-        )
+    figura_ocupacao.update_yaxes(range=[0, 115], ticksuffix=" %")
+    mostrar_grafico(estilo_grafico(figura_ocupacao, altura=300))
 
 
 # =========================================================
-# ANÁLISE MENSAL
+# MENSAL
 # =========================================================
 
-with detalhe:
+with aba_mensal:
 
-    st.subheader(
-        f"Análise mensal líquida · {ano}"
+    seccao(
+        f"Análise mensal · {ano}",
+        "Valores sem taxa turística. A última coluna compara com o mesmo mês "
+        f"de {ano_anterior}.",
     )
 
-    colunas = [
-        "Mês",
-        "Earnings bruto (€)",
-        "Taxa utilizada (€)",
-        "Total líquido (€)",
-        "Reservas",
-        "Noites",
-        "Dias do mês",
-        "Ocupação (%)",
-        "Duração média",
-        "Média líquida/noite (€)",
-        "Valor líquido/dia calendário (€)",
+    analise = mensal[[
+        "Mês", "Total líquido (€)", "Noites", "Ocupação (%)",
+        "Média líquida/noite (€)", "Reservas", "Duração média",
+        "Taxa utilizada (€)", "Cancelamentos retidos (€)", "Reembolsos (€)",
+        "Total do mês (€)",
+    ]].copy()
+
+    analise[f"vs {ano_anterior}"] = [
+        variacao(atual, antes)
+        for atual, antes in zip(
+            mensal["Total líquido (€)"], mensal_anterior["Total líquido (€)"],
+        )
     ]
 
     st.dataframe(
-        mensal[
-            colunas
-        ].round(2),
+        tabela_formatada(analise, {
+            "Total líquido (€)": euros,
+            "Noites": inteiro,
+            "Ocupação (%)": percentagem,
+            "Média líquida/noite (€)": euros,
+            "Reservas": inteiro,
+            "Duração média": decimal,
+            "Taxa utilizada (€)": euros,
+            "Cancelamentos retidos (€)": euros,
+            "Reembolsos (€)": euros,
+            "Total do mês (€)": euros,
+            f"vs {ano_anterior}": texto_variacao,
+        }),
         hide_index=True,
         use_container_width=True,
     )
 
-
-    figura_ocupacao = px.bar(
-        mensal,
-        x="Mês",
-        y="Ocupação (%)",
-        title=(
-            f"Ocupação mensal · {ano}"
-        ),
-        category_orders={
-            "Mês": MESES
-        },
-        color_discrete_sequence=[
-            "#2563EB"
-        ],
+    st.caption(
+        "Total do mês = total líquido das estadias + cancelamentos retidos "
+        "− reembolsos enviados."
     )
-
-    figura_ocupacao.update_traces(
-        text=mensal[
-            "Ocupação (%)"
-        ].map(
-            lambda valor: (
-                f"{valor:.1f}%"
-                if valor
-                else ""
-            )
-        ),
-        textposition="outside",
-        cliponaxis=False,
-    )
-
-    st.plotly_chart(
-        figura_ocupacao,
-        use_container_width=True,
-    )
-
 
     st.download_button(
-        "Descarregar resumo mensal",
-        mensal.to_csv(
-            index=False,
-            sep=";",
-            decimal=",",
-        ).encode(
-            "utf-8-sig"
-        ),
-        file_name=(
-            f"resumo_{ano}.csv"
-        ),
+        "Descarregar resumo mensal (CSV)",
+        mensal.drop(columns=["Soma durações"]).round(2).to_csv(
+            index=False, sep=";", decimal=",",
+        ).encode("utf-8-sig"),
+        file_name=f"resumo_{ano}.csv",
         mime="text/csv",
     )
+
+    seccao("Média líquida por noite", "O valor que cada noite ocupada rendeu.")
+
+    figura_media = go.Figure()
+    figura_media.add_bar(
+        x=MESES_CURTOS,
+        y=mensal["Média líquida/noite (€)"],
+        name=str(ano),
+        marker_color=COR_PRINCIPAL,
+        text=mensal["Média líquida/noite (€)"].map(etiqueta_euros),
+        textposition="outside",
+        cliponaxis=False,
+        hovertemplate="%{y:,.2f} €<extra>" + str(ano) + "</extra>",
+    )
+    if mensal_anterior["Noites"].sum() > 0:
+        figura_media.add_scatter(
+            x=MESES_CURTOS,
+            y=mensal_anterior["Média líquida/noite (€)"],
+            name=str(ano_anterior),
+            mode="lines+markers",
+            line=dict(color=COR_ANTERIOR, width=2.5),
+            hovertemplate="%{y:,.2f} €<extra>" + str(ano_anterior) + "</extra>",
+        )
+    mostrar_grafico(estilo_grafico(figura_media, altura=320))
+
+
+# =========================================================
+# PLANO DE PREÇOS
+# =========================================================
+
+with aba_precos:
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        ano_plano = st.selectbox(
+            "Ano a planear", [HOJE.year + 1, HOJE.year], key="ano_plano",
+        )
+    with c2:
+        crescimento_pct = st.slider(
+            "Objetivo de crescimento (%)", 0, 30, 10, key="crescimento_pct",
+        )
+    with c3:
+        desconto_pct = st.slider(
+            "Desconto médio que vais dar (%)", 0, 30, 10, key="desconto_pct",
+            help=(
+                "Descontos semanais, de última hora, promoções. O preço de "
+                "tabela sobe o necessário para, depois deste desconto, "
+                "ainda atingires o objetivo."
+            ),
+        )
+    with c4:
+        comissao_pct = st.number_input(
+            "Comissão Airbnb (%)", min_value=0.0, max_value=20.0, value=3.0,
+            step=0.5, key="comissao_pct",
+            help="Comissão de anfitrião descontada pelo Airbnb.",
+        )
+
+    ano_plano = int(ano_plano)
+    ano_referencia = ano_plano - 1
+
+    def plano_de(listing, ocupacoes=None):
+        return core.plano_precos(
+            mensal_de(listing, ano_referencia),
+            mensal_de(listing, ano_referencia - 1),
+            mensal_de(listing, ano_plano),
+            ano_plano,
+            HOJE,
+            crescimento=crescimento_pct / 100,
+            comissao=comissao_pct / 100,
+            desconto=desconto_pct / 100,
+            ocupacoes=ocupacoes,
+        )
+
+    ocupacoes_editadas = None
+
+    if alojamento_unico:
+        plano_inicial = plano_de(alojamento_unico)
+
+        seccao(
+            "1. Ocupação que esperas",
+            f"Por omissão é a ocupação de {ano_referencia}. Muda a última "
+            "coluna se contas ocupar mais ou menos noites.",
+        )
+
+        editor_ocupacao = st.data_editor(
+            plano_inicial[[
+                "Mês", "Referência", "Rendimento referência (€)",
+                "Ocupação referência (%)", "Líquido/noite referência (€)",
+                "Ocupação esperada (%)",
+            ]].round(2),
+            disabled=[
+                "Mês", "Referência", "Rendimento referência (€)",
+                "Ocupação referência (%)", "Líquido/noite referência (€)",
+            ],
+            hide_index=True,
+            use_container_width=True,
+            key=f"ocupacao_{alojamento_unico}_{ano_plano}",
+            column_config={
+                "Rendimento referência (€)": st.column_config.NumberColumn(
+                    format="%.2f €",
+                ),
+                "Ocupação referência (%)": st.column_config.NumberColumn(
+                    format="%.1f %%",
+                ),
+                "Líquido/noite referência (€)": st.column_config.NumberColumn(
+                    format="%.2f €",
+                ),
+                "Ocupação esperada (%)": st.column_config.NumberColumn(
+                    min_value=1.0, max_value=100.0, step=1.0, format="%.1f %%",
+                ),
+            },
+        )
+
+        ocupacoes_editadas = {
+            indice + 1: float(valor)
+            for indice, valor in enumerate(
+                editor_ocupacao["Ocupação esperada (%)"]
+            )
+            if not pd.isna(valor)
+        }
+
+        plano = plano_de(alojamento_unico, ocupacoes_editadas)
+        planos = {alojamento_unico: plano}
+    else:
+        planos = {listing: plano_de(listing) for listing in selecionados}
+        plano = None
+
+    objetivo_total = sum(
+        float(p["Objetivo (€)"].sum()) for p in planos.values()
+    )
+    referencia_total = sum(
+        float(p["Rendimento referência (€)"].sum()) for p in planos.values()
+    )
+    reservado_total = sum(
+        float(p["Já reservado (€)"].sum()) for p in planos.values()
+    )
+    atingido = 100 * reservado_total / objetivo_total if objetivo_total else None
+
+    seccao(
+        f"Objetivo {ano_plano}" if not alojamento_unico
+        else f"2. Objetivo e preços para {ano_plano}",
+        f"Cada mês tem de render +{crescimento_pct} % face ao mês de referência.",
+    )
+
+    itens_plano = [
+        {
+            "rotulo": f"Objetivo {ano_plano}",
+            "valor": euros(objetivo_total),
+            "nota": h(f"+{crescimento_pct} % sobre {euros(referencia_total)}"),
+            "destaque": True,
+        },
+        {
+            "rotulo": "Já reservado",
+            "valor": euros(reservado_total),
+            "nota": (
+                h(f"{percentagem(atingido)} do objetivo")
+                + '<div class="ad-progresso"><i style="width:'
+                + f"{min(100.0, atingido or 0):.1f}%"
+                + '"></i></div>'
+            ),
+        },
+        {
+            "rotulo": "Falta reservar",
+            "valor": euros(max(0.0, objetivo_total - reservado_total)),
+            "nota": h("para atingir o objetivo do ano"),
+        },
+    ]
+
+    if plano is not None:
+        noites_precisas = plano["Noites necessárias"].sum()
+        itens_plano.append({
+            "rotulo": "Líquido médio por noite necessário",
+            "valor": euros(
+                objetivo_total / noites_precisas if noites_precisas else None
+            ),
+            "nota": h(f"em {inteiro(noites_precisas)} noites ocupadas"),
+        })
+
+    cartoes(itens_plano)
+
+    objetivo_mensal = sum(p["Objetivo (€)"].fillna(0).to_numpy() for p in planos.values())
+    referencia_mensal = sum(
+        p["Rendimento referência (€)"].fillna(0).to_numpy() for p in planos.values()
+    )
+    reservado_mensal = sum(p["Já reservado (€)"].to_numpy() for p in planos.values())
+
+    figura_plano = go.Figure()
+    figura_plano.add_bar(
+        x=MESES_CURTOS, y=referencia_mensal, name="Referência",
+        marker_color=COR_NEUTRA,
+        hovertemplate="%{y:,.0f} €<extra>Referência</extra>",
+    )
+    figura_plano.add_bar(
+        x=MESES_CURTOS, y=objetivo_mensal, name=f"Objetivo {ano_plano}",
+        marker_color=COR_PRINCIPAL,
+        text=[etiqueta_euros(valor) for valor in objetivo_mensal],
+        textposition="outside", cliponaxis=False,
+        hovertemplate="%{y:,.0f} €<extra>Objetivo</extra>",
+    )
+    figura_plano.add_scatter(
+        x=MESES_CURTOS, y=reservado_mensal, name="Já reservado",
+        mode="markers",
+        marker=dict(color=COR_TEXTO, size=11, symbol="line-ew", line=dict(width=3, color=COR_TEXTO)),
+        hovertemplate="%{y:,.0f} €<extra>Já reservado</extra>",
+    )
+    figura_plano.update_layout(barmode="group")
+    mostrar_grafico(estilo_grafico(figura_plano, altura=380))
+
+    if plano is not None:
+        tabela_plano = plano[[
+            "Mês", "Objetivo (€)", "Ocupação esperada (%)",
+            "Líquido/noite necessário (€)", "Variação do preço (%)",
+            "Preço mínimo (€)", "Preço de tabela (€)", "Já reservado (€)",
+            "Objetivo atingido (%)",
+        ]]
+
+        st.dataframe(
+            tabela_formatada(tabela_plano, {
+                "Objetivo (€)": euros,
+                "Ocupação esperada (%)": percentagem,
+                "Líquido/noite necessário (€)": euros,
+                "Variação do preço (%)": texto_variacao,
+                "Preço mínimo (€)": euros,
+                "Preço de tabela (€)": euros,
+                "Já reservado (€)": euros,
+                "Objetivo atingido (%)": percentagem,
+            }),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        st.caption(
+            "Líquido/noite necessário = objetivo ÷ noites esperadas. "
+            f"Preço mínimo = esse valor antes da comissão de {decimal(comissao_pct)} % "
+            "(abaixo disto o mês não atinge o objetivo). "
+            f"Preço de tabela = preço a publicar para que, com {desconto_pct} % "
+            "de desconto, ainda fiques no preço mínimo. "
+            "A taxa turística não está incluída em nenhum destes preços."
+        )
+
+        seccao(
+            "3. O que o hóspede paga com cada desconto",
+            "Preço por noite depois de aplicar o desconto ao preço de tabela. "
+            "Os valores com ⚠ ficam abaixo do preço mínimo.",
+        )
+
+        cenarios = core.cenarios_desconto(plano)
+        visivel = cenarios[["Mês"]].copy()
+        visivel["Preço de tabela"] = cenarios["Preço de tabela (€)"].map(euros)
+        for coluna in cenarios.columns:
+            if not coluna.startswith("−"):
+                continue
+            visivel[coluna] = [
+                "—" if pd.isna(valor)
+                else euros(valor) + (" ⚠" if valor < minimo - 0.005 else "")
+                for valor, minimo in zip(
+                    cenarios[coluna], cenarios["Preço mínimo (€)"],
+                )
+            ]
+        visivel["Preço mínimo"] = cenarios["Preço mínimo (€)"].map(euros)
+
+        st.dataframe(visivel, hide_index=True, use_container_width=True)
+
+        st.download_button(
+            f"Descarregar plano {ano_plano} (CSV)",
+            plano.round(2).to_csv(
+                index=False, sep=";", decimal=",",
+            ).encode("utf-8-sig"),
+            file_name=f"plano_precos_{ano_plano}.csv",
+            mime="text/csv",
+        )
+    else:
+        seccao("Objetivo por alojamento")
+
+        linhas_objetivo = []
+        for listing, plano_listing in planos.items():
+            objetivo = float(plano_listing["Objetivo (€)"].sum())
+            reservado = float(plano_listing["Já reservado (€)"].sum())
+            linhas_objetivo.append({
+                "Alojamento": propriedades.loc[listing, "Nome"],
+                "Proprietário": propriedades.loc[listing, "Proprietário"],
+                "Referência": euros(
+                    float(plano_listing["Rendimento referência (€)"].sum())
+                ),
+                f"Objetivo {ano_plano}": euros(objetivo),
+                "Já reservado": euros(reservado),
+                "Atingido": percentagem(
+                    100 * reservado / objetivo if objetivo else None
+                ),
+            })
+
+        st.dataframe(
+            pd.DataFrame(linhas_objetivo),
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.info(
+            "Escolhe um alojamento na barra lateral para ver os preços por "
+            "noite e ajustar a ocupação esperada."
+        )
 
 
 # =========================================================
 # RECONCILIAÇÃO
 # =========================================================
 
-with reconciliacao:
+with aba_reconciliacao:
 
-    st.subheader(
-        f"Reconciliação financeira · {ano}"
-    )
-
-    st.markdown(
-        """
-O valor final é calculado desta forma:
-
-**Valores positivos de todos os registos**  
-**− reembolsos e ajustes negativos**  
-**= total de todos os registos dos CSV**
-
-**Total de todos os registos dos CSV**  
-**− taxa turística utilizada**  
-**= total final líquido**
-        """
-    )
-
-
-    st.subheader(
-        "1. Componentes dos CSV"
-    )
-
-    c1, c2, c3 = st.columns(3)
-
-    c1.metric(
-        "Valores positivos",
-        euros(
-            valores_positivos
-        ),
-    )
-
-    c2.metric(
-        "Reembolsos/ajustes negativos",
-        euros(
-            reembolsos_negativos
-        ),
-    )
-
-    c3.metric(
-        "Total de todos os registos",
-        euros(
-            total_todos_registos_csv
-        ),
-    )
-
-
-    st.code(
-        f"{euros(valores_positivos)} "
-        f"- {euros(reembolsos_negativos)} "
-        f"= {euros(total_todos_registos_csv)}"
-    )
-
-
-    st.subheader(
-        "2. Reservas ativas e cancelamentos"
-    )
-
-    c1, c2, c3 = st.columns(3)
-
-    c1.metric(
-        "Reservas não canceladas",
-        euros(
-            total_reservas_ativas
-        ),
-    )
-
-    c2.metric(
-        "Registos cancelados · saldo",
-        euros(
-            total_registos_cancelados
-        ),
-    )
-
-    c3.metric(
-        "Total dos CSV",
-        euros(
-            total_todos_registos_csv
-        ),
-    )
-
-
-    c1, c2 = st.columns(2)
-
-    c1.metric(
-        "Cancelamentos positivos",
-        euros(
-            cancelamentos_positivos
-        ),
-    )
-
-    c2.metric(
-        "Cancelamentos negativos",
-        euros(
-            cancelamentos_negativos
-        ),
-    )
-
-
-    st.caption(
-        "Um cancelamento pode manter um valor positivo, "
-        "por exemplo por uma comissão de cancelamento. "
-        "Por isso, não eliminamos automaticamente todos "
-        "os valores financeiros associados a cancelamentos."
-    )
-
-
-    st.subheader(
-        "3. Taxa turística e total final"
-    )
-
-    c1, c2, c3 = st.columns(3)
-
-    c1.metric(
-        "Total dos CSV",
-        euros(
-            total_todos_registos_csv
-        ),
-    )
-
-    c2.metric(
-        "Taxa turística utilizada",
-        euros(
-            taxa_turistica_ano
-        ),
-    )
-
-    c3.metric(
-        "Total final líquido",
-        euros(
-            total_final_liquido
-        ),
-    )
-
-
-    st.code(
-        f"{euros(total_todos_registos_csv)} "
-        f"- {euros(taxa_turistica_ano)} "
-        f"= {euros(total_final_liquido)}"
-    )
-
-
-    st.subheader(
-        "4. Comparação com o painel Airbnb"
-    )
-
-
-    total_airbnb_informado = st.number_input(
-        "Total apresentado no painel Airbnb (€)",
-        min_value=0.0,
-        value=32325.95,
-        step=0.01,
-        format="%.2f",
-        key=(
-            f"total_airbnb_"
-            f"{alojamento}_"
-            f"{ano}"
-        ),
-    )
-
-
-    diferenca_airbnb_csv = (
-        total_airbnb_informado
-        - total_todos_registos_csv
-    )
-
-
-    c1, c2, c3 = st.columns(3)
-
-    c1.metric(
-        "Total indicado no Airbnb",
-        euros(
-            total_airbnb_informado
-        ),
-    )
-
-    c2.metric(
-        "Total calculado pelos CSV",
-        euros(
-            total_todos_registos_csv
-        ),
-    )
-
-    c3.metric(
-        "Diferença por reconciliar",
-        euros(
-            diferenca_airbnb_csv
-        ),
-    )
-
-
-    if abs(
-        diferenca_airbnb_csv
-    ) < 0.01:
-
-        st.success(
-            "O total indicado no Airbnb coincide "
-            "com o total calculado pelos CSV."
+    def reconciliacao_de(listing):
+        chave = (listing, ano)
+        resumo = mensal_de(listing, ano)
+        return core.reconciliacao(
+            reservas_por_listing[listing],
+            ano,
+            resumo["Taxa utilizada (€)"].sum(),
+            sum(item["valor"] for item in reembolsos.get(chave, {}).values()),
         )
 
+    seccao(
+        f"Reconciliação financeira · {ano}",
+        "Soma de todos os registos dos CSV com entrada neste ano, incluindo "
+        "cancelamentos, menos reembolsos e taxa turística.",
+    )
+
+    if alojamento_unico:
+        rec = reconciliacao_de(alojamento_unico)
+
+        cartoes([
+            {
+                "rotulo": "Total dos CSV",
+                "valor": euros(rec["total_csv"]),
+                "nota": h(
+                    f"Reservas ativas {euros(rec['ativas'])} + "
+                    f"cancelamentos {euros(rec['canceladas'])}"
+                ),
+            },
+            {
+                "rotulo": "Reembolsos enviados",
+                "valor": euros(rec["reembolsos_manuais"]),
+                "nota": h("ajuste manual por mês"),
+            },
+            {
+                "rotulo": "Taxa turística",
+                "valor": euros(rec["taxa"]),
+                "nota": h("a entregar ao município"),
+            },
+            {
+                "rotulo": "Total final líquido",
+                "valor": euros(rec["final"]),
+                "nota": h("CSV − reembolsos − taxa turística"),
+                "destaque": True,
+            },
+        ])
+
+        if rec["negativos"]:
+            st.caption(
+                f"Os CSV já incluem {euros(rec['negativos'])} em valores "
+                "negativos; não são subtraídos uma segunda vez."
+            )
+
+        seccao(
+            "Reembolsos enviados aos hóspedes",
+            "Valores que devolveste (por exemplo pelo centro de resoluções do "
+            "Airbnb) e que não aparecem nos CSV de reservas.",
+        )
+
+        if tem_reembolsos:
+            guardados = reembolsos.get((alojamento_unico, ano), {})
+            base_reembolsos = pd.DataFrame({
+                "Mês": MESES,
+                "Cancelamentos retidos (€)": mensal_de(alojamento_unico, ano)[
+                    "Cancelamentos retidos (€)"
+                ].round(2),
+                "Reembolso (€)": [
+                    guardados.get(mes, {}).get("valor") for mes in range(1, 13)
+                ],
+                "Notas": [
+                    guardados.get(mes, {}).get("notes", "")
+                    for mes in range(1, 13)
+                ],
+            })
+            base_reembolsos["Reembolso (€)"] = pd.to_numeric(
+                base_reembolsos["Reembolso (€)"]
+            )
+
+            editor_reembolsos = st.data_editor(
+                base_reembolsos,
+                disabled=["Mês", "Cancelamentos retidos (€)"],
+                hide_index=True,
+                use_container_width=True,
+                key=f"reembolsos_{alojamento_unico}_{ano}",
+                column_config={
+                    "Cancelamentos retidos (€)": st.column_config.NumberColumn(
+                        format="%.2f €",
+                    ),
+                    "Reembolso (€)": st.column_config.NumberColumn(
+                        min_value=0.0, step=1.0, format="%.2f €",
+                    ),
+                    "Notas": st.column_config.TextColumn(),
+                },
+            )
+
+            if st.button("Guardar reembolsos", type="primary"):
+                try:
+                    guardar_reembolsos(alojamento_unico, ano, editor_reembolsos)
+                    limpar_cache()
+                    st.rerun()
+                except Exception as erro:
+                    st.error("Não foi possível guardar os reembolsos.")
+                    st.code(str(erro))
+        else:
+            st.info(
+                "Para registar reembolsos é preciso criar a tabela "
+                "`monthly_adjustments` no Supabase. O SQL está no separador Dados."
+            )
+
+        seccao(
+            "Comparar com o Airbnb",
+            "Escreve o total que o painel do Airbnb mostra para este ano.",
+        )
+
+        total_airbnb = st.number_input(
+            "Total apresentado no Airbnb (€)",
+            min_value=0.0, value=0.0, step=0.01, format="%.2f",
+            key=f"total_airbnb_{alojamento_unico}_{ano}",
+        )
+
+        if total_airbnb > 0:
+            diferenca = total_airbnb - rec["total_csv"]
+            cartoes([
+                {"rotulo": "Airbnb", "valor": euros(total_airbnb), "nota": ""},
+                {"rotulo": "Total dos CSV", "valor": euros(rec["total_csv"]), "nota": ""},
+                {
+                    "rotulo": "Diferença por explicar",
+                    "valor": euros(diferenca),
+                    "nota": h(
+                        "O Airbnb soma por data de pagamento e inclui ajustes "
+                        "que não vêm nos CSV de reservas."
+                    ),
+                },
+            ])
+
+        registos_cancelados = rec["registos"][rec["registos"]["Cancelada"]]
+        if len(registos_cancelados):
+            seccao("Registos cancelados")
+            st.dataframe(
+                pd.DataFrame({
+                    "Código": registos_cancelados["Confirmation code"],
+                    "Estado": registos_cancelados["Status"],
+                    "Entrada": registos_cancelados["Entrada"].dt.strftime("%d/%m/%Y"),
+                    "Saída": registos_cancelados["Saída"].dt.strftime("%d/%m/%Y"),
+                    "Noites": registos_cancelados["Noites"],
+                    "Valor retido": registos_cancelados["Valor bruto"].map(euros),
+                }),
+                hide_index=True,
+                use_container_width=True,
+            )
     else:
+        linhas_rec = []
+        for listing in selecionados:
+            rec = reconciliacao_de(listing)
+            linhas_rec.append({
+                "Alojamento": propriedades.loc[listing, "Nome"],
+                "Proprietário": propriedades.loc[listing, "Proprietário"],
+                "Reservas ativas": rec["ativas"],
+                "Cancelamentos": rec["canceladas"],
+                "Total dos CSV": rec["total_csv"],
+                "Reembolsos": rec["reembolsos_manuais"],
+                "Taxa turística": rec["taxa"],
+                "Total final líquido": rec["final"],
+            })
 
-        st.warning(
-            "Há uma diferença entre o painel Airbnb "
-            "e os CSV importados. Verifica se todas as "
-            "páginas foram importadas e se o painel "
-            "Airbnb usa o mesmo período e a mesma data "
-            "de atribuição das transações."
-        )
-
-
-    st.subheader(
-        "5. Registos negativos identificados"
-    )
-
-
-    registos_negativos = (
-        dados_ano.loc[
-            dados_ano[
-                "Valor bruto"
-            ] < 0,
-            [
-                "Confirmation code",
-                "Status",
-                "Entrada",
-                "Saída",
-                "Valor bruto",
-            ],
+        tabela_rec = pd.DataFrame(linhas_rec)
+        colunas_valor = [
+            "Reservas ativas", "Cancelamentos", "Total dos CSV", "Reembolsos",
+            "Taxa turística", "Total final líquido",
         ]
-        .sort_values(
-            "Entrada",
-            ascending=False,
-        )
-    )
 
-
-    if registos_negativos.empty:
-
-        st.info(
-            "Não foram encontrados valores negativos "
-            "nos registos deste ano."
-        )
-
-    else:
+        cartoes([
+            {
+                "rotulo": "Total dos CSV",
+                "valor": euros(tabela_rec["Total dos CSV"].sum()),
+                "nota": "",
+            },
+            {
+                "rotulo": "Reembolsos enviados",
+                "valor": euros(tabela_rec["Reembolsos"].sum()),
+                "nota": "",
+            },
+            {
+                "rotulo": "Taxa turística",
+                "valor": euros(tabela_rec["Taxa turística"].sum()),
+                "nota": "",
+            },
+            {
+                "rotulo": "Total final líquido",
+                "valor": euros(tabela_rec["Total final líquido"].sum()),
+                "nota": "",
+                "destaque": True,
+            },
+        ])
 
         st.dataframe(
-            registos_negativos,
+            tabela_formatada(
+                tabela_rec, {coluna: euros for coluna in colunas_valor},
+            ),
             hide_index=True,
             use_container_width=True,
         )
-
-
-    st.subheader(
-        "6. Registos cancelados"
-    )
-
-
-    registos_cancelados_ano = (
-        dados_ano.loc[
-            dados_ano[
-                "Cancelada"
-            ],
-            [
-                "Confirmation code",
-                "Status",
-                "Entrada",
-                "Saída",
-                "Valor bruto",
-            ],
-        ]
-        .sort_values(
-            "Entrada",
-            ascending=False,
-        )
-    )
-
-
-    if registos_cancelados_ano.empty:
-
         st.info(
-            "Não foram encontrados registos "
-            "cancelados neste ano."
-        )
-
-    else:
-
-        st.dataframe(
-            registos_cancelados_ano,
-            hide_index=True,
-            use_container_width=True,
+            "Escolhe um alojamento na barra lateral para registar reembolsos "
+            "ou comparar com o total do Airbnb."
         )
 
 
@@ -2347,512 +1526,201 @@ O valor final é calculado desta forma:
 # TAXA TURÍSTICA
 # =========================================================
 
-with impostos:
+with aba_taxa:
 
-    st.subheader(
-        f"Taxa turística · {ano}"
+    seccao(
+        f"Taxa turística · {ano}",
+        "2 € por hóspede e por noite, de abril a outubro, até 7 noites por "
+        "reserva. O valor manual de um mês substitui o cálculo automático.",
     )
 
+    if alojamento_unico:
+        resumo_taxa = mensal_de(alojamento_unico, ano)
+        guardados = taxas.get((alojamento_unico, ano), {})
 
-    if int(ano) < 2026:
-
-        st.info(
-            "A taxa turística não é aplicada "
-            "no dashboard antes de 2026."
-        )
-
-
-    editor_base = mensal[
-        [
-            "Mês",
-            "Taxa automática (€)",
-            "Taxa utilizada (€)",
-            "Origem",
-        ]
-    ].copy()
-
-
-    editor_base[
-        "Ajuste manual (€)"
-    ] = [
-        ajustes
-        .get(
-            mes,
-            {},
-        )
-        .get(
-            "valor",
-            None,
-        )
-        for mes
-        in range(
-            1,
-            13,
-        )
-    ]
-
-
-    editor_base[
-        "Notas"
-    ] = [
-        ajustes
-        .get(
-            mes,
-            {},
-        )
-        .get(
-            "notes",
-            "",
-        )
-        for mes
-        in range(
-            1,
-            13,
-        )
-    ]
-
-
-    editor = st.data_editor(
-        editor_base[
-            [
-                "Mês",
-                "Taxa automática (€)",
-                "Ajuste manual (€)",
-                "Taxa utilizada (€)",
-                "Origem",
-                "Notas",
-            ]
-        ],
-        disabled=[
-            "Mês",
-            "Taxa automática (€)",
-            "Taxa utilizada (€)",
-            "Origem",
-        ],
-        hide_index=True,
-        use_container_width=True,
-        key=(
-            f"taxa_"
-            f"{alojamento}_"
-            f"{ano}"
-        ),
-        column_config={
-            "Ajuste manual (€)":
-                st.column_config.NumberColumn(
-                    min_value=0.0,
-                    step=1.0,
-                    format="%.2f",
+        base_taxa = pd.DataFrame({
+            "Mês": MESES,
+            "Taxa automática (€)": resumo_taxa["Taxa automática (€)"].round(2),
+            "Ajuste manual (€)": pd.to_numeric(
+                pd.Series(
+                    [guardados.get(mes, {}).get("valor") for mes in range(1, 13)]
                 )
-        },
-    )
+            ),
+            "Taxa utilizada (€)": resumo_taxa["Taxa utilizada (€)"].round(2),
+            "Origem": resumo_taxa["Origem"],
+            "Notas": [
+                guardados.get(mes, {}).get("notes", "") for mes in range(1, 13)
+            ],
+        })
 
-
-    if (
-        int(ano) >= 2026
-        and st.button(
-            "Guardar ajustes mensais",
-            type="primary",
+        editor_taxa = st.data_editor(
+            base_taxa,
+            disabled=[
+                "Mês", "Taxa automática (€)", "Taxa utilizada (€)", "Origem",
+            ],
+            hide_index=True,
+            use_container_width=True,
+            key=f"taxa_{alojamento_unico}_{ano}",
+            column_config={
+                "Taxa automática (€)": st.column_config.NumberColumn(
+                    format="%.2f €",
+                ),
+                "Ajuste manual (€)": st.column_config.NumberColumn(
+                    min_value=0.0, step=1.0, format="%.2f €",
+                ),
+                "Taxa utilizada (€)": st.column_config.NumberColumn(
+                    format="%.2f €",
+                ),
+                "Notas": st.column_config.TextColumn(),
+            },
         )
-    ):
 
-        try:
-
-            guardar_ajustes(
-                alojamento,
-                ano,
-                editor,
-            )
-
-            st.success(
-                "Ajustes guardados."
-            )
-
-            st.rerun()
-
-        except Exception as erro:
-
-            st.error(
-                "Não foi possível guardar os ajustes."
-            )
-
-            st.code(
-                str(erro)
-            )
-
-
-    st.metric(
-        "Taxa utilizada no ano",
-        euros(
-            mensal[
-                "Taxa utilizada (€)"
-            ].sum()
-        ),
-    )
-
-
-    mapa = mensal[
-        [
-            "Mês",
-            "Taxa automática (€)",
-            "Ajuste manual (€)",
-            "Taxa utilizada (€)",
-            "Origem",
-        ]
-    ].copy()
-
-
-    mapa[
-        "Etiqueta"
-    ] = (
-        mapa[
-            "Taxa utilizada (€)"
-        ].map(
-            etiqueta_euros
+        st.caption(
+            "O valor certo de cada mês está no relatório de rendimentos do "
+            "Airbnb, na linha \"Impostos remetidos\"."
         )
-    )
 
+        if ano >= 2026:
+            if st.button("Guardar ajustes da taxa", type="primary"):
+                try:
+                    guardar_ajustes_taxa(alojamento_unico, ano, editor_taxa)
+                    limpar_cache()
+                    st.rerun()
+                except Exception as erro:
+                    st.error("Não foi possível guardar os ajustes.")
+                    st.code(str(erro))
+        else:
+            st.caption("Antes de 2026 a taxa turística considerada é 0 €.")
 
-    figura_taxa = px.bar(
-        mapa,
-        x="Mês",
-        y="Taxa utilizada (€)",
-        text="Etiqueta",
-        color="Origem",
-        title=(
-            f"Taxa mensal utilizada · {ano}"
-        ),
-        category_orders={
-            "Mês": MESES
-        },
-        color_discrete_map={
-            "Manual":
-                "#F59E0B",
+        cartoes([
+            {
+                "rotulo": f"Taxa utilizada em {ano}",
+                "valor": euros(resumo_taxa["Taxa utilizada (€)"].sum()),
+                "nota": h(
+                    "Estimativa automática: "
+                    + euros(resumo_taxa["Taxa automática (€)"].sum())
+                ),
+            },
+        ])
+    else:
+        linhas_taxa = []
+        for listing in selecionados:
+            resumo_taxa = mensal_de(listing, ano)
+            linhas_taxa.append({
+                "Alojamento": propriedades.loc[listing, "Nome"],
+                "Proprietário": propriedades.loc[listing, "Proprietário"],
+                "Taxa automática": euros(resumo_taxa["Taxa automática (€)"].sum()),
+                "Taxa utilizada": euros(resumo_taxa["Taxa utilizada (€)"].sum()),
+            })
 
-            "Automático":
-                "#60A5FA",
+        cartoes([
+            {
+                "rotulo": f"Taxa utilizada em {ano}",
+                "valor": euros(anual["taxa"]),
+                "nota": h(f"{len(selecionados)} alojamentos"),
+            },
+        ])
+        st.dataframe(
+            pd.DataFrame(linhas_taxa), hide_index=True, use_container_width=True,
+        )
+        st.info(
+            "Escolhe um alojamento na barra lateral para editar os valores "
+            "mensais da taxa."
+        )
 
-            "Não aplicável":
-                "#CBD5E1",
-        },
-    )
-
-
-    figura_taxa.update_traces(
+    figura_taxa = go.Figure()
+    figura_taxa.add_bar(
+        x=MESES_CURTOS,
+        y=mensal["Taxa utilizada (€)"],
+        marker_color=COR_ANTERIOR,
+        text=mensal["Taxa utilizada (€)"].map(etiqueta_euros),
         textposition="outside",
         cliponaxis=False,
+        hovertemplate="%{y:,.0f} €<extra>Taxa utilizada</extra>",
     )
-
-
-    figura_taxa.update_layout(
-        uniformtext_minsize=9,
-        uniformtext_mode="hide",
-        margin=dict(
-            t=80,
-            r=30,
-            b=50,
-            l=50,
-        ),
-    )
-
-
-    st.plotly_chart(
-        figura_taxa,
-        use_container_width=True,
-    )
-
-
-    st.caption(
-        "O ajuste manual substitui integralmente "
-        "o cálculo automático do respetivo mês."
-    )
+    mostrar_grafico(estilo_grafico(figura_taxa, altura=280))
 
 
 # =========================================================
-# PLANEAMENTO DE PREÇOS
+# DADOS
 # =========================================================
 
-with precos:
+with aba_dados:
 
-    st.subheader(
-        f"Planeamento · {int(ano) + 1}"
-    )
+    seccao("Alojamentos", "Dá um nome curto a cada anúncio e indica de quem é.")
 
-
-    base_plano = pd.DataFrame({
-        "Mês":
-            MESES,
-
-        "Histórico líquido/noite (€)":
-            mensal[
-                "Média líquida/noite (€)"
-            ].round(2),
-
-        "Preço base (€)":
-            [0.0] * 12,
-
-        "Preço mínimo (€)":
-            [0.0] * 12,
-
-        "Ocupação objetivo (%)":
-            [0.0] * 12,
-    })
-
-
-    plano = st.data_editor(
-        base_plano,
-        disabled=[
-            "Mês",
-            "Histórico líquido/noite (€)",
-        ],
-        hide_index=True,
-        use_container_width=True,
-        key=(
-            f"plano_"
-            f"{alojamento}_"
-            f"{ano}"
-        ),
-        column_config={
-            "Preço base (€)":
-                st.column_config.NumberColumn(
-                    min_value=0.0,
-                    step=1.0,
-                    format="%.2f",
-                ),
-
-            "Preço mínimo (€)":
-                st.column_config.NumberColumn(
-                    min_value=0.0,
-                    step=1.0,
-                    format="%.2f",
-                ),
-
-            "Ocupação objetivo (%)":
-                st.column_config.NumberColumn(
-                    min_value=0.0,
-                    max_value=100.0,
-                    step=1.0,
-                    format="%.1f",
-                ),
+    cartoes([
+        {"rotulo": "Reservas guardadas", "valor": inteiro(len(dados)), "nota": ""},
+        {"rotulo": "Alojamentos", "valor": inteiro(len(listings)), "nota": ""},
+        {
+            "rotulo": "Proprietários",
+            "valor": inteiro(propriedades["Proprietário"].nunique()),
+            "nota": h(" · ".join(sorted(set(propriedades["Proprietário"])))),
         },
-    )
+    ])
 
-
-    for coluna in [
-        "Preço base (€)",
-        "Preço mínimo (€)",
-        "Ocupação objetivo (%)",
-    ]:
-
-        plano[coluna] = (
-            pd.to_numeric(
-                plano[coluna],
-                errors="coerce",
-            )
-            .fillna(0.0)
-        )
-
-
-    st.subheader(
-        "Preços após desconto"
-    )
-
-
-    cenarios = plano[
-        [
-            "Mês",
-            "Preço base (€)",
-        ]
-    ].copy()
-
-
-    for desconto in [
-        5,
-        7,
-        10,
-        15,
-        20,
-    ]:
-
-        cenarios[
-            f"−{desconto}% (€)"
-        ] = (
-            plano[
-                "Preço base (€)"
-            ]
-            * (
-                1
-                - desconto
-                / 100
-            )
-        ).round(2)
-
-
-    st.dataframe(
-        cenarios,
-        hide_index=True,
-        use_container_width=True,
-    )
-
-
-    desconto = st.selectbox(
-        "Desconto para a simulação",
-        [
-            0,
-            5,
-            7,
-            10,
-            15,
-            20,
-        ],
-        format_func=(
-            lambda valor:
-                f"{valor}%"
-        ),
-    )
-
-
-    precos_finais = (
-        plano[
-            "Preço base (€)"
-        ]
-        * (
-            1
-            - desconto
-            / 100
-        )
-    )
-
-
-    dias_proximo_ano = pd.Series(
-        [
-            calendar.monthrange(
-                int(ano) + 1,
-                mes,
-            )[1]
-            for mes
-            in range(
-                1,
-                13,
-            )
-        ],
-        index=plano.index,
-    )
-
-
-    noites_estimadas = (
-        dias_proximo_ano
-        * plano[
-            "Ocupação objetivo (%)"
-        ]
-        / 100
-    )
-
-
-    receita_simulada = (
-        precos_finais
-        * noites_estimadas
-    )
-
-
-    st.metric(
-        "Receita líquida simulada anual",
-        euros(
-            receita_simulada.sum()
-        ),
-    )
-
-
-    simulacao = pd.DataFrame({
-        "Mês":
-            plano["Mês"],
-
-        "Preço após desconto (€)":
-            precos_finais.round(2),
-
-        "Noites estimadas":
-            noites_estimadas.round(1),
-
-        "Receita líquida simulada (€)":
-            receita_simulada.round(2),
+    base_propriedades = pd.DataFrame({
+        "Anúncio no Airbnb": listings,
+        "Nome curto": [propriedades.loc[l, "Nome"] for l in listings],
+        "Proprietário": [propriedades.loc[l, "Proprietário"] for l in listings],
+        "Reservas": [len(reservas_por_listing[l]) for l in listings],
     })
 
+    if tem_propriedades:
+        editor_propriedades = st.data_editor(
+            base_propriedades,
+            disabled=["Anúncio no Airbnb", "Reservas"],
+            hide_index=True,
+            use_container_width=True,
+            key="propriedades",
+            column_config={
+                "Nome curto": st.column_config.TextColumn(
+                    help="Por exemplo: T1+1 - Almeida Garrett",
+                ),
+                "Proprietário": st.column_config.SelectboxColumn(
+                    options=PROPRIETARIOS, required=True,
+                ),
+            },
+        )
+        if st.button("Guardar alojamentos", type="primary"):
+            try:
+                guardar_propriedades(editor_propriedades)
+                limpar_cache()
+                st.rerun()
+            except Exception as erro:
+                st.error("Não foi possível guardar os alojamentos.")
+                st.code(str(erro))
+    else:
+        st.dataframe(base_propriedades, hide_index=True, use_container_width=True)
 
-    st.dataframe(
-        simulacao,
-        hide_index=True,
-        use_container_width=True,
-    )
+    em_falta = [
+        nome for nome, existe in [
+            ("properties", tem_propriedades),
+            ("monthly_adjustments", tem_reembolsos),
+        ] if not existe
+    ]
 
+    if em_falta:
+        seccao(
+            "Configuração em falta no Supabase",
+            "Sem estas tabelas a aplicação funciona, mas não guarda nomes "
+            "curtos, proprietários nem reembolsos: " + ", ".join(em_falta) + ".",
+        )
+        st.code(SQL_CONFIGURACAO, language="sql")
+        st.caption(
+            "Depois de correr o SQL, carrega em \"Atualizar dados\" na barra lateral."
+        )
 
-# =========================================================
-# DADOS E REGRAS
-# =========================================================
-
-with qualidade:
-
-    st.subheader(
-        "Estado dos dados"
-    )
-
-
-    c1, c2, c3 = (
-        st.columns(3)
-    )
-
-
-    c1.metric(
-        "Reservas guardadas",
-        len(dados),
-    )
-
-
-    c2.metric(
-        "Reservas neste alojamento",
-        len(
-            dados_alojamento
-        ),
-    )
-
-
-    c3.metric(
-        "Alojamentos",
-        dados[
-            "Listing"
-        ].nunique(),
-    )
-
-
-    st.subheader(
-        "Regras aplicadas"
-    )
-
-
+    seccao("Regras aplicadas")
     st.markdown(
         """
-- Chave única: `Listing + Confirmation code`.
-- Antes de 2026, a taxa turística considerada é 0 €.
-- O ajuste manual da taxa substitui o cálculo automático do respetivo mês.
-- Os gráficos de ocupação e desempenho usam apenas reservas não canceladas.
-- A reconciliação financeira usa todos os registos presentes nos CSV.
-- Os valores negativos já reduzem o total dos CSV.
-- Os reembolsos negativos não são subtraídos uma segunda vez.
-- O total final líquido é o total assinado dos CSV menos a taxa turística utilizada.
-- `Earnings bruto` é preservado.
+- Cada reserva é identificada por anúncio + código de confirmação.
+- O valor de uma reserva é repartido de forma igual pelas suas noites; cada noite conta no mês em que acontece. O dia de saída não conta.
+- Os indicadores usam apenas reservas não canceladas e excluem a taxa turística.
+- Os cancelamentos que ficaram com valor e os reembolsos enviados aparecem à parte, no total do mês e na reconciliação.
+- A ocupação divide as noites ocupadas pelos dias em que o alojamento já estava à venda (desde a primeira noite reservada).
+- Antes de 2026 a taxa turística considerada é 0 €. O ajuste manual de um mês substitui o cálculo automático.
+- O plano de preços usa como referência o mesmo mês do ano anterior; se esse mês ainda não acabou, usa o do ano antes quando rendeu mais.
 - Nomes e contactos dos hóspedes não são guardados.
-        """
-    )
-
-
-    st.subheader(
-        "Fórmula do valor final"
-    )
-
-
-    st.code(
-        "Valores positivos\n"
-        "- Reembolsos e ajustes negativos\n"
-        "= Total dos CSV\n\n"
-        "Total dos CSV\n"
-        "- Taxa turística utilizada\n"
-        "= Total final líquido"
+"""
     )
