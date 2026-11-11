@@ -49,6 +49,16 @@ def euros(valor, casas=2):
     return texto.replace(",", "X").replace(".", ",").replace("X", ".") + " €"
 
 
+def euros_sinal(valor, casas=0):
+    """Valor com sinal explícito, para diferenças: +1.234 € ou −746 €."""
+    if _vazio(valor):
+        return "—"
+    if abs(float(valor)) < 0.005:
+        return euros(0, casas)
+    sinal = "+" if valor > 0 else "−"
+    return sinal + euros(abs(float(valor)), casas)
+
+
 def etiqueta_euros(valor):
     if _vazio(valor) or abs(float(valor)) < 0.5:
         return ""
@@ -117,13 +127,14 @@ def preparar_csv(ficheiro):
             f"Existem registos sem Listing, código ou estado em {nome}."
         )
 
-    dados["Entrada"] = pd.to_datetime(
-        dados["Start date"], format="%m/%d/%Y", errors="coerce",
-    )
-    dados["Saída"] = pd.to_datetime(
-        dados["End date"], format="%m/%d/%Y", errors="coerce",
-    )
+    # O Airbnb deixa de mostrar o valor nas reservas mais antigas de alguns
+    # exports. Sem valor não há nada para analisar: ficam de fora e são contadas.
+    sem_valor = dados["Earnings"].eq("")
+    ignoradas = int(sem_valor.sum())
+    dados = dados[~sem_valor].copy()
+
     dados["Noites"] = pd.to_numeric(dados["# of nights"], errors="coerce")
+    dados["Entrada"], dados["Saída"] = _ler_datas(dados, nome)
 
     for origem, destino in [
         ("# of adults", "Adultos"),
@@ -150,37 +161,72 @@ def preparar_csv(ficheiro):
     dados["Cêntimos"] = dados["Earnings"].map(converter_earnings_para_centimos)
     dados["Valor bruto"] = dados["Cêntimos"] / 100
 
-    noites_calculadas = (dados["Saída"] - dados["Entrada"]).dt.days
-    invalidas = (
-        dados["Entrada"].isna()
-        | dados["Saída"].isna()
-        | dados["Noites"].isna()
-        | noites_calculadas.le(0)
-        | dados["Noites"].ne(noites_calculadas)
-    )
-    if invalidas.any():
-        raise ValueError(
-            f"Existem {int(invalidas.sum())} reservas com datas ou noites "
-            f"inválidas em {nome}."
-        )
-
     dados["Noites"] = dados["Noites"].astype(int)
     dados["Cancelada"] = dados["Status"].str.contains(
         r"cancel", case=False, na=False,
     )
 
-    return dados.drop_duplicates()
+    dados = dados.drop_duplicates()
+    dados.attrs["ignoradas"] = ignoradas
+    return dados
+
+
+FORMATOS_DATA = ["%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d"]
+
+
+def _datas_invalidas(dados, formato):
+    entrada = pd.to_datetime(dados["Start date"], format=formato, errors="coerce")
+    saida = pd.to_datetime(dados["End date"], format=formato, errors="coerce")
+    noites = (saida - entrada).dt.days
+    invalidas = (
+        entrada.isna()
+        | saida.isna()
+        | dados["Noites"].isna()
+        | noites.le(0)
+        | dados["Noites"].ne(noites)
+    )
+    return entrada, saida, int(invalidas.sum())
+
+
+def _ler_datas(dados, nome):
+    """Descobre o formato das datas do ficheiro.
+
+    O Airbnb exporta mês/dia/ano ou dia/mês/ano conforme o idioma da conta.
+    O formato certo é o único em que todas as datas existem e a diferença
+    entre saída e entrada bate com o número de noites.
+    """
+    resultados = [
+        (formato, *_datas_invalidas(dados, formato)) for formato in FORMATOS_DATA
+    ]
+    validos = [r for r in resultados if r[3] == 0]
+
+    if not validos:
+        menos_mau = min(r[3] for r in resultados)
+        raise ValueError(
+            f"Existem {menos_mau} reservas com datas ou noites inválidas "
+            f"em {nome}."
+        )
+
+    _, entrada, saida, _ = validos[0]
+    for _, outra_entrada, outra_saida, _ in validos[1:]:
+        if not (entrada.equals(outra_entrada) and saida.equals(outra_saida)):
+            raise ValueError(
+                f"Não foi possível distinguir dia e mês nas datas de {nome}."
+            )
+    return entrada, saida
 
 
 def preparar_lote_csv(ficheiros):
-    lote = pd.concat(
-        [preparar_csv(ficheiro) for ficheiro in ficheiros], ignore_index=True,
-    )
+    tabelas = [preparar_csv(ficheiro) for ficheiro in ficheiros]
+    ignoradas = sum(tabela.attrs.get("ignoradas", 0) for tabela in tabelas)
+    lote = pd.concat(tabelas, ignore_index=True)
 
     chave = ["Listing", "Confirmation code"]
+    # Compara valores já interpretados: o mesmo registo pode vir de contas
+    # com idiomas diferentes (datas e estados escritos de outra forma).
     comparar = [
-        "Status", "Start date", "End date", "# of nights", "# of adults",
-        "# of children", "# of infants", "Earnings",
+        "Entrada", "Saída", "Noites", "Adultos", "Crianças", "Bebés",
+        "Cêntimos", "Cancelada",
     ]
 
     repetidas = lote[lote.duplicated(subset=chave, keep=False)]
@@ -202,7 +248,9 @@ def preparar_lote_csv(ficheiros):
                 + ", ".join(exemplos)
             )
 
-    return lote.drop_duplicates(subset=chave, keep="last").reset_index(drop=True)
+    lote = lote.drop_duplicates(subset=chave, keep="last").reset_index(drop=True)
+    lote.attrs["ignoradas"] = ignoradas
+    return lote
 
 
 def dataframe_para_registos(dados, agora):
@@ -448,6 +496,12 @@ def resumo_mensal(
             "Soma durações": float(
                 periodo.drop_duplicates("Reserva")["Duração reserva"].sum()
             ),
+            "Mínimo/noite (€)": (
+                float(periodo["Valor líquido"].min()) if noites_mes else None
+            ),
+            "Máximo/noite (€)": (
+                float(periodo["Valor líquido"].max()) if noites_mes else None
+            ),
         })
 
     return _indicadores(pd.DataFrame(linhas)), ano_noites
@@ -479,6 +533,13 @@ def _indicadores(mensal):
     mensal["Valor líquido/dia disponível (€)"] = (
         mensal["Total líquido (€)"] / disponiveis.where(disponiveis > 0)
     )
+    # Quanto renderia o mês se todas as noites fossem vendidas ao preço
+    # da melhor noite, e quanto ficou por captar face a isso.
+    maximo = mensal["Máximo/noite (€)"].astype(float)
+    mensal["Potencial ao máximo (€)"] = maximo * disponiveis.where(disponiveis > 0)
+    mensal["Por captar (€)"] = (
+        mensal["Potencial ao máximo (€)"] - mensal["Total líquido (€)"]
+    )
     return mensal
 
 
@@ -502,6 +563,12 @@ def agregar_mensal(mensais):
 
     total["Origem"] = origens.apply(juntar_origem, axis=1).to_numpy()
     total["Ajuste manual (€)"] = None
+    total["Mínimo/noite (€)"] = pd.concat(
+        [mensal["Mínimo/noite (€)"].astype(float) for mensal in mensais], axis=1,
+    ).min(axis=1).to_numpy()
+    total["Máximo/noite (€)"] = pd.concat(
+        [mensal["Máximo/noite (€)"].astype(float) for mensal in mensais], axis=1,
+    ).max(axis=1).to_numpy()
     return _indicadores(total)
 
 
@@ -581,7 +648,7 @@ def reconciliacao(reservas, ano, taxa_turistica, reembolsos_manuais):
 
 def plano_precos(
     base, anterior, reservado, ano_plano, hoje,
-    crescimento=0.10, comissao=0.03, desconto=0.10, ocupacoes=None,
+    crescimento=0.10, comissao=0.155, desconto=0.10, ocupacoes=None,
     numero_alojamentos=1,
 ):
     """Plano mensal de preços para `ano_plano`.
@@ -591,7 +658,7 @@ def plano_precos(
                referência ainda não acabou)
     reservado  resumo mensal das reservas já existentes para ano_plano
     crescimento  objetivo de crescimento do rendimento (0.10 = +10 %)
-    comissao     comissão de anfitrião do Airbnb sobre o preço (0.03 = 3 %)
+    comissao     comissão do Airbnb incluída no preço publicado (0.155 = 15,5 %)
     desconto     desconto médio que conta dar (semanal, última hora, etc.)
     ocupacoes    {mês: ocupação esperada em %} para substituir a histórica
     numero_alojamentos  quantos alojamentos o resumo `base` agrega
@@ -672,6 +739,7 @@ def plano_precos(
             "Rendimento referência (€)": rendimento if rendimento > 0 else None,
             "Ocupação referência (%)": ocupacao_ref,
             "Líquido/noite referência (€)": media_ref,
+            "Máximo/noite referência (€)": referencia["Máximo/noite (€)"],
             "Objetivo (€)": objetivo,
             "Ocupação esperada (%)": ocupacao,
             "Noites necessárias": noites_plano,

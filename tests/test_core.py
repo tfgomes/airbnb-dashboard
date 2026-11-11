@@ -128,3 +128,90 @@ def test_plano_de_precos_mais_dez_por_cento(reservas, noites):
 
     cenarios = core.cenarios_desconto(plano)
     assert cenarios.iloc[7]["−10 %"] == pytest.approx(agosto["Preço mínimo (€)"], abs=0.01)
+
+
+def test_minimo_media_maximo_por_noite(reservas, noites):
+    mensal, _ = core.resumo_mensal(reservas, noites, 2026, ajustes(), HOJE)
+    com_noites = mensal[mensal["Noites"] > 0]
+    assert (com_noites["Mínimo/noite (€)"] <= com_noites["Média líquida/noite (€)"] + 0.01).all()
+    assert (com_noites["Média líquida/noite (€)"] <= com_noites["Máximo/noite (€)"] + 0.01).all()
+    # Potencial = melhor noite × dias do mês; nunca abaixo do que rendeu.
+    agosto = mensal.iloc[7]
+    assert agosto["Potencial ao máximo (€)"] == pytest.approx(agosto["Máximo/noite (€)"] * 31)
+    assert (com_noites["Por captar (€)"] >= -0.01).all()
+    assert pd.isna(mensal.iloc[11]["Mínimo/noite (€)"])  # dezembro sem noites
+
+    total = core.agregar_mensal([mensal, mensal])
+    assert total.iloc[7]["Máximo/noite (€)"] == pytest.approx(agosto["Máximo/noite (€)"])
+
+
+def test_comissao_por_omissao_e_15_5(reservas, noites):
+    base, _ = core.resumo_mensal(reservas, noites, 2026, ajustes(), HOJE)
+    anterior, _ = core.resumo_mensal(reservas, noites, 2025, {}, HOJE)
+    plano = core.plano_precos(base, anterior, None, 2027, HOJE, desconto=0.0)
+    agosto = plano.iloc[7]
+    assert agosto["Preço mínimo (€)"] == pytest.approx(
+        agosto["Líquido/noite necessário (€)"] / 0.845, abs=0.01
+    )
+    assert agosto["Preço de tabela (€)"] == pytest.approx(agosto["Preço mínimo (€)"])
+
+
+def test_euros_sinal():
+    assert core.euros_sinal(1234.4) == "+1.234 €"
+    assert core.euros_sinal(-746) == "−746 €"
+    assert core.euros_sinal(None) == "—"
+
+
+CABECALHO = (
+    '"Confirmation code","Status","Guest name","Contact","# of adults",'
+    '"# of children","# of infants","Start date","End date","# of nights",'
+    '"Booked","Listing","Earnings"\n'
+)
+
+
+def _csv(tmp_path, nome, linhas):
+    ficheiro = tmp_path / nome
+    ficheiro.write_text(CABECALHO + "\n".join(linhas) + "\n", encoding="utf-8")
+    return str(ficheiro)
+
+
+def test_importa_datas_americanas_e_europeias(tmp_path):
+    americano = _csv(tmp_path, "us.csv", [
+        '"HMAAA","Canceled by guest","X","","2","0","0","4/3/2027","4/10/2027","7","2026-10-29","Casa","€1,596.88"',
+    ])
+    europeu = _csv(tmp_path, "pt.csv", [
+        '"HMAAA","Cancelled by guest","X","","2","0","0","03/04/2027","10/04/2027","7","2026-10-29","Casa","€1,596.88"',
+        '"HMBBB","Past guest","Y","","0","0","0","03/03/2026","05/03/2026","2","","Casa",""',
+    ])
+
+    lote = core.preparar_lote_csv([americano, europeu])
+
+    # A mesma reserva vinda das duas contas não é um conflito.
+    assert len(lote) == 1
+    reserva = lote.iloc[0]
+    assert reserva["Entrada"] == pd.Timestamp("2027-04-03")
+    assert reserva["Saída"] == pd.Timestamp("2027-04-10")
+    assert reserva["Cêntimos"] == 159688
+    assert reserva["Cancelada"]
+    # A reserva antiga sem valor fica de fora e é contada.
+    assert lote.attrs["ignoradas"] == 1
+    assert "Guest name" not in lote.columns
+
+
+def test_conflito_real_continua_a_ser_recusado(tmp_path):
+    a = _csv(tmp_path, "a.csv", [
+        '"HMAAA","Confirmed","X","","2","0","0","4/3/2027","4/10/2027","7","","Casa","€500.00"',
+    ])
+    b = _csv(tmp_path, "b.csv", [
+        '"HMAAA","Confirmed","X","","2","0","0","4/3/2027","4/10/2027","7","","Casa","€450.00"',
+    ])
+    with pytest.raises(ValueError, match="versões diferentes"):
+        core.preparar_lote_csv([a, b])
+
+
+def test_datas_impossiveis_sao_recusadas(tmp_path):
+    mau = _csv(tmp_path, "mau.csv", [
+        '"HMAAA","Confirmed","X","","2","0","0","4/3/2027","4/10/2027","3","","Casa","€500.00"',
+    ])
+    with pytest.raises(ValueError, match="datas ou noites inválidas"):
+        core.preparar_csv(mau)
