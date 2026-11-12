@@ -122,6 +122,8 @@ create table if not exists public.cost_items (
     kind text not null default 'Operacional',
     monthly_cents bigint,
     annual_cents bigint,
+    month_cents jsonb,
+    annualize boolean not null default false,
     notes text,
     updated_at timestamptz not null default now(),
     primary key (listing, cost_year, category)
@@ -138,6 +140,11 @@ create table if not exists public.cost_settings (
     updated_at timestamptz not null default now(),
     primary key (listing, cost_year)
 );
+
+-- Para quem criou a tabela antes dos custos mês a mês.
+alter table public.cost_items add column if not exists month_cents jsonb;
+alter table public.cost_items
+    add column if not exists annualize boolean not null default false;
 
 alter table public.cost_items enable row level security;
 alter table public.cost_settings enable row level security;
@@ -693,13 +700,17 @@ def guardar_custos(listing, ano, editor, definicoes):
             continue
         tipo = linha["Tipo"]
         notas = linha.get("Notas", "")
+        anualizar = linha.get("Anualizar", False)
+        meses = [centimos(linha[mes]) for mes in MESES_CURTOS]
         linhas[categoria] = {
             "listing": listing,
             "cost_year": int(ano),
             "category": categoria,
             "kind": core.TIPOS_CUSTO[0] if pd.isna(tipo) or not tipo else str(tipo),
-            "monthly_cents": centimos(linha["Mensal (€)"]),
-            "annual_cents": centimos(linha["Anual (€)"]),
+            "monthly_cents": None,
+            "annual_cents": sum(valor or 0 for valor in meses) or None,
+            "month_cents": meses,
+            "annualize": False if pd.isna(anualizar) else bool(anualizar),
             "notes": "" if pd.isna(notas) else str(notas or ""),
             "updated_at": agora,
         }
@@ -880,8 +891,16 @@ registos_propriedades = ler_tabela_opcional(
 
 registos_custos = ler_tabela_opcional(
     "cost_items",
-    "listing,cost_year,category,kind,monthly_cents,annual_cents,notes",
+    "listing,cost_year,category,kind,monthly_cents,annual_cents,"
+    "month_cents,annualize,notes",
 )
+# As colunas dos custos mês a mês podem ainda não existir numa tabela antiga.
+tem_custos_mensais = registos_custos is not None
+if registos_custos is None:
+    registos_custos = ler_tabela_opcional(
+        "cost_items",
+        "listing,cost_year,category,kind,monthly_cents,annual_cents,notes",
+    )
 registos_definicoes = ler_tabela_opcional(
     "cost_settings",
     "listing,cost_year,invested_cents,property_value_cents,"
@@ -2592,47 +2611,60 @@ with aba_custos:
                     if int(registo["cost_year"]) == anos_guardados[-1]
                 ]
                 aviso_custos = (
-                    f"Valores copiados de {anos_guardados[-1]}. Ajusta o que "
-                    f"mudou e guarda para ficarem registados em {ano}."
+                    f"Ainda não há custos de {ano}. A lista de categorias vem "
+                    f"de {anos_guardados[-1]}; os valores começam vazios."
                 )
 
-        def em_euros(centimos):
-            return None if centimos is None or pd.isna(centimos) else int(centimos) / 100
+        ordem = {
+            linha[0]: posicao for posicao, linha in enumerate(core.CUSTOS_SUGERIDOS)
+        }
+        custos_ano = sorted(
+            custos_ano,
+            key=lambda registo: (
+                ordem.get(registo["category"], len(ordem)), registo["category"],
+            ),
+        )
 
         if custos_ano:
-            ordem = {
-                categoria: posicao
-                for posicao, (categoria, _) in enumerate(core.CUSTOS_SUGERIDOS)
-            }
-            custos_ano = sorted(
-                custos_ano,
-                key=lambda registo: (
-                    ordem.get(registo["category"], len(ordem)), registo["category"],
-                ),
-            )
+            valores_guardados = [
+                core.meses_do_registo(registo) for registo in custos_ano
+            ]
+            if aviso_custos:
+                # Ano novo: fica a lista de categorias, os valores começam vazios.
+                valores_guardados = [
+                    ([None] * 12, anualizar) for _, anualizar in valores_guardados
+                ]
             base_custos = pd.DataFrame({
                 "Categoria": [registo["category"] for registo in custos_ano],
                 "Tipo": [registo["kind"] for registo in custos_ano],
-                "Mensal (€)": [em_euros(r["monthly_cents"]) for r in custos_ano],
-                "Anual (€)": [em_euros(r["annual_cents"]) for r in custos_ano],
+                "Anualizar": [anualizar for _, anualizar in valores_guardados],
+                **{
+                    MESES_CURTOS[indice]: [
+                        meses[indice] for meses, _ in valores_guardados
+                    ]
+                    for indice in range(12)
+                },
                 "Notas": [registo.get("notes") or "" for registo in custos_ano],
             })
         else:
             base_custos = pd.DataFrame({
-                "Categoria": [categoria for categoria, _ in core.CUSTOS_SUGERIDOS],
-                "Tipo": [tipo for _, tipo in core.CUSTOS_SUGERIDOS],
-                "Mensal (€)": None,
-                "Anual (€)": None,
+                "Categoria": [linha[0] for linha in core.CUSTOS_SUGERIDOS],
+                "Tipo": [linha[1] for linha in core.CUSTOS_SUGERIDOS],
+                "Anualizar": [linha[2] for linha in core.CUSTOS_SUGERIDOS],
+                **{mes: None for mes in MESES_CURTOS},
                 "Notas": "",
             })
 
-        for coluna in ["Mensal (€)", "Anual (€)"]:
+        for coluna in MESES_CURTOS:
             base_custos[coluna] = pd.to_numeric(base_custos[coluna], errors="coerce")
+        base_custos["Anualizar"] = base_custos["Anualizar"].astype(bool)
 
         seccao(
-            f"Custos de {ano}",
-            "Escreve o valor mensal ou o anual de cada linha (o anual ganha se "
-            "preencheres os dois). Podes acrescentar e apagar linhas.",
+            f"Custos de {ano}, mês a mês",
+            "Escreve o valor de cada fatura no mês em que a pagaste; o total "
+            "do ano é calculado por baixo. Marca \"Anualizar\" nas despesas "
+            "que caem num mês mas dizem respeito ao ano inteiro (IMI, seguros, "
+            "condomínio, obras): o custo é repartido pelos 12 meses.",
         )
         if aviso_custos:
             st.caption(aviso_custos)
@@ -2653,12 +2685,18 @@ with aba_custos:
                         "fica como capital teu no imóvel."
                     ),
                 ),
-                "Mensal (€)": st.column_config.NumberColumn(
-                    min_value=0.0, step=1.0, format="%.2f €",
+                "Anualizar": st.column_config.CheckboxColumn(
+                    help=(
+                        "Reparte o total da linha pelos 12 meses, em vez de "
+                        "contar tudo no mês em que foi pago."
+                    ),
                 ),
-                "Anual (€)": st.column_config.NumberColumn(
-                    min_value=0.0, step=1.0, format="%.2f €",
-                ),
+                **{
+                    mes: st.column_config.NumberColumn(
+                        min_value=0.0, step=1.0, format="%.2f",
+                    )
+                    for mes in MESES_CURTOS
+                },
                 "Notas": st.column_config.TextColumn(),
             },
         )
@@ -2723,7 +2761,13 @@ with aba_custos:
                 help="Deixa a 0 para usar a estimativa. Quando souberes o valor certo, escreve-o aqui.",
             )
 
-        if tem_custos:
+        if tem_custos and not tem_custos_mensais:
+            st.info(
+                "Para guardar os custos mês a mês faltam duas colunas na "
+                "tabela `cost_items`. Corre o SQL do separador Dados no "
+                "Supabase e carrega em \"Atualizar dados\"."
+            )
+        elif tem_custos:
             if st.button("Guardar custos e pressupostos", type="primary"):
                 try:
                     guardar_custos(alojamento_unico, ano, editor_custos, {
@@ -2750,11 +2794,16 @@ with aba_custos:
             categoria = linha["Categoria"]
             if pd.isna(categoria) or not str(categoria).strip():
                 continue
+            anualizar = linha["Anualizar"]
             custos_lista.append({
                 "categoria": str(categoria).strip(),
                 "tipo": linha["Tipo"],
-                "anual": core.valor_anual(linha["Mensal (€)"], linha["Anual (€)"]),
+                "anualizar": False if pd.isna(anualizar) else bool(anualizar),
+                "meses": [linha[mes] for mes in MESES_CURTOS],
             })
+
+        # Acrescenta o total anual a cada linha e soma os meses.
+        totais_mes = core.custos_por_mes(custos_lista)
 
         fin = core.resultado_financeiro(
             anual["total"],
@@ -2854,6 +2903,71 @@ with aba_custos:
             "taxa do teu caso."
         )
 
+        # ----- Custos por mês -----
+
+        receita_mes = mensal_de(alojamento_unico, ano)["Total do mês (€)"].astype(float)
+        custo_mes = totais_mes["custo"]
+        pago_mes = totais_mes["pago"]
+        total_custos = sum(custo_mes)
+
+        if total_custos > 0:
+            seccao(
+                "Custos por mês",
+                "\"Pago no mês\" são as faturas desse mês. \"Custo do mês\" "
+                "reparte pelo ano as linhas marcadas para anualizar. O "
+                "resultado é antes de IRS.",
+            )
+
+            mes_mais_caro = max(range(12), key=lambda indice: custo_mes[indice])
+            maximo_custo = max(custo_mes) or 1.0
+
+            linhas_custo_mes = []
+            for indice in range(12):
+                resultado_mes = receita_mes.iloc[indice] - custo_mes[indice]
+                linhas_custo_mes.append([
+                    h(MESES[indice])
+                    + (
+                        ' <span class="ad-pill desce">mês mais caro</span>'
+                        if indice == mes_mais_caro else ""
+                    ),
+                    c_euros(pago_mes[indice]),
+                    c_calor(custo_mes[indice], maximo_custo),
+                    c_barra(100 * custo_mes[indice] / total_custos),
+                    c_euros(receita_mes.iloc[indice]),
+                    c_diferenca(resultado_mes)
+                    if receita_mes.iloc[indice] or custo_mes[indice] else "—",
+                ])
+
+            tabela_html(
+                [
+                    "Mês", "Pago no mês", "Custo do mês", "% dos custos do ano",
+                    "Receita do mês", "Resultado do mês",
+                ],
+                linhas_custo_mes,
+                total=[
+                    "Total",
+                    c_euros(sum(pago_mes)),
+                    c_euros(total_custos),
+                    "",
+                    c_euros(receita_mes.sum()),
+                    c_diferenca(receita_mes.sum() - total_custos),
+                ],
+            )
+
+            figura_custos = go.Figure()
+            figura_custos.add_bar(
+                x=MESES_CURTOS, y=custo_mes, name="Custo do mês",
+                marker_color=COR_TEXTO,
+                hovertemplate="%{y:,.0f} €<extra>Custo do mês</extra>",
+            )
+            figura_custos.add_scatter(
+                x=MESES_CURTOS, y=receita_mes, name="Receita do mês",
+                mode="lines+markers",
+                line=dict(color=COR_PRINCIPAL, width=3),
+                hovertemplate="%{y:,.0f} €<extra>Receita do mês</extra>",
+            )
+            mostrar_grafico(estilo_grafico(figura_custos, altura=320))
+
         seccao("Indicadores")
 
         cartoes([
@@ -2905,11 +3019,15 @@ with aba_custos:
             key=lambda custo: custo["anual"], reverse=True,
         )
         if com_valor:
-            seccao("Para onde vai o dinheiro", "Custos do ano, do maior para o menor.")
+            seccao(
+                "Custos por categoria",
+                "Total do ano de cada linha, do maior para o menor.",
+            )
             barras_alojamentos([
                 (
                     custo["categoria"],
-                    f"{custo['tipo']} · {euros(custo['anual'] / 12)} por mês",
+                    f"{custo['tipo']} · média de {euros(custo['anual'] / 12)} por mês"
+                    + (" · anualizado" if custo["anualizar"] else ""),
                     custo["anual"],
                 )
                 for custo in com_valor
@@ -3445,6 +3563,10 @@ with aba_dados:
                 tem_outros or not tem_reembolsos,
             ),
             ("cost_items e cost_settings", tem_custos),
+            (
+                "colunas month_cents e annualize em cost_items",
+                tem_custos_mensais or not tem_custos,
+            ),
         ] if not existe
     ]
 

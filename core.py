@@ -1019,25 +1019,27 @@ TIPOS_CUSTO = [
 ]
 
 # A comissão do Airbnb não está aqui: a receita usada já vem depois dela.
+# (categoria, tipo, anualizar). "Anualizar" é para despesas que caem num ou
+# dois meses mas dizem respeito ao ano inteiro: o custo é repartido por 12.
 CUSTOS_SUGERIDOS = [
-    ("Crédito: juros", "Juros do crédito"),
-    ("Crédito: amortização de capital", "Amortização de capital"),
-    ("Comissão de conta bancária", "Operacional"),
-    ("Seguro de vida", "Operacional"),
-    ("Seguro multirriscos", "Operacional"),
-    ("Seguro de responsabilidade civil", "Operacional"),
-    ("Condomínio", "Operacional"),
-    ("Extra condomínio", "Operacional"),
-    ("IMI", "Impostos e taxas"),
-    ("IVA das estadias", "Impostos e taxas"),
-    ("IVA da comissão da plataforma", "Impostos e taxas"),
-    ("Limpezas", "Operacional"),
-    ("Consumíveis e loiça", "Operacional"),
-    ("Internet e TV", "Operacional"),
-    ("Água", "Operacional"),
-    ("Gás", "Operacional"),
-    ("Eletricidade", "Operacional"),
-    ("Manutenção e reparações", "Operacional"),
+    ("Crédito: juros", "Juros do crédito", False),
+    ("Crédito: amortização de capital", "Amortização de capital", False),
+    ("Comissão de conta bancária", "Operacional", False),
+    ("Seguro de vida", "Operacional", True),
+    ("Seguro multirriscos", "Operacional", True),
+    ("Seguro de responsabilidade civil", "Operacional", True),
+    ("Condomínio", "Operacional", True),
+    ("Extra condomínio", "Operacional", True),
+    ("IMI", "Impostos e taxas", True),
+    ("IVA das estadias", "Impostos e taxas", False),
+    ("IVA da comissão da plataforma", "Impostos e taxas", False),
+    ("Limpezas", "Operacional", False),
+    ("Consumíveis e loiça", "Operacional", False),
+    ("Internet e TV", "Operacional", False),
+    ("Água", "Operacional", False),
+    ("Gás", "Operacional", False),
+    ("Eletricidade", "Operacional", False),
+    ("Obras e reparações", "Operacional", True),
 ]
 
 
@@ -1048,6 +1050,54 @@ def valor_anual(mensal, anual):
     if not _vazio(mensal) and float(mensal) > 0:
         return float(mensal) * 12
     return 0.0
+
+
+def meses_do_registo(registo):
+    """Valores mensais (em euros) e opção de anualizar de uma linha guardada.
+
+    Aceita também o formato antigo, em que só havia um valor mensal ou anual.
+    """
+    guardados = registo.get("month_cents")
+    if isinstance(guardados, (list, tuple)) and len(guardados) == 12:
+        meses = [
+            None if valor is None or pd.isna(valor) else int(valor) / 100
+            for valor in guardados
+        ]
+        return meses, bool(registo.get("annualize"))
+
+    mensal = registo.get("monthly_cents")
+    anual = registo.get("annual_cents")
+    if not _vazio(anual) and int(anual) > 0:
+        # Um valor anual único: fica em janeiro e é repartido pelo ano.
+        return [int(anual) / 100] + [None] * 11, True
+    if not _vazio(mensal) and int(mensal) > 0:
+        return [int(mensal) / 100] * 12, False
+    return [None] * 12, bool(registo.get("annualize"))
+
+
+def custos_por_mes(custos):
+    """Totais mensais dos custos.
+
+    custos  lista de dicionários com "anualizar" e "meses" (12 valores)
+
+    Devolve "pago" (o que foi pago em cada mês, como está nas faturas) e
+    "custo" (o mesmo, mas com as linhas anualizadas repartidas por 12), e
+    acrescenta a cada linha o seu total "anual".
+    """
+    pago = [0.0] * 12
+    custo = [0.0] * 12
+
+    for linha in custos:
+        meses = [
+            0.0 if _vazio(valor) else float(valor) for valor in linha["meses"]
+        ]
+        total = sum(meses)
+        linha["anual"] = total
+        for indice in range(12):
+            pago[indice] += meses[indice]
+            custo[indice] += total / 12 if linha.get("anualizar") else meses[indice]
+
+    return {"pago": pago, "custo": custo}
 
 
 def resultado_financeiro(
