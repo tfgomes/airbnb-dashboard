@@ -171,7 +171,10 @@ Importação de CSV
 
 Aspeto: os gráficos de barras de rendimento usam um degradê magenta → rosa →
 coral, como os do Airbnb. O Plotly não pinta degradês numa barra, por isso
-cada barra é desenhada em camadas sobrepostas (`barras_degrade`).
+cada barra é desenhada em camadas sobrepostas (`barras_degrade`). No gráfico
+mensal há duas barras por mês: o ano escolhido e o anterior. A ocupação usa
+sempre as mesmas cores: verde a 100 %, verde claro de 90 % a 99 %, laranja
+abaixo de 90 %. Os cabeçalhos das tabelas são azul-escuros.
 
 ## 8. Forma de trabalhar
 
