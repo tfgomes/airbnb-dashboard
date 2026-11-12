@@ -184,7 +184,12 @@ section[data-testid="stSidebar"] { background: #FAFAFA; border-right: 1px solid 
 .ad-resumo .ad-cartao.grande { display: flex; flex-direction: column; justify-content: center; padding: 22px 24px; }
 .ad-resumo .ad-cartao.grande .ad-valor { font-size: 1.95rem; }
 .ad-pilha { display: flex; flex-direction: column; gap: 14px; }
-.ad-pilha .ad-cartao { flex: 1 1 auto; padding: 12px 18px; }
+.ad-pilha .ad-cartao { flex: 1 1 auto; padding: 12px 18px; background: #F2F3F5; border-color: #E6E7EA; box-shadow: none; }
+.ad-grelha.compacta { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.ad-grelha.compacta .ad-cartao { background: #F2F3F5; border-color: #E6E7EA; box-shadow: none; padding: 10px 16px; border-radius: 14px; }
+.ad-grelha.compacta .ad-rotulo { font-size: 0.72rem; margin-bottom: 2px; }
+.ad-grelha.compacta .ad-valor { font-size: 1.15rem; }
+.ad-grelha.compacta .ad-nota { font-size: 0.72rem; margin-top: 2px; line-height: 1.25; }
 .ad-pilha .ad-valor { font-size: 1.2rem; }
 .ad-pilha .ad-nota { margin-top: 2px; }
 .ad-cartao.azul { background: linear-gradient(135deg, #1F3A5F 0%, #2C5282 100%); border: none; }
@@ -283,8 +288,11 @@ def seccao(titulo, nota=None):
     st.markdown(bloco, unsafe_allow_html=True)
 
 
-def cartoes(itens):
-    """itens: lista de dicionários com rotulo, valor, nota (HTML já seguro) e destaque."""
+def cartoes(itens, compacto=False):
+    """itens: lista de dicionários com rotulo, valor, nota (HTML já seguro) e destaque.
+
+    compacto=True desenha cartões cinzentos com cerca de metade da altura.
+    """
     partes = []
     for item in itens:
         classe = "ad-cartao destaque" if item.get("destaque") else "ad-cartao"
@@ -296,8 +304,9 @@ def cartoes(itens):
             f'<div class="ad-nota">{nota}</div>'
             "</div>"
         )
+    classe_grelha = "ad-grelha compacta" if compacto else "ad-grelha"
     st.markdown(
-        '<div class="ad-grelha">' + "".join(partes) + "</div>",
+        f'<div class="{classe_grelha}">' + "".join(partes) + "</div>",
         unsafe_allow_html=True,
     )
 
@@ -1547,7 +1556,7 @@ with aba_desempenho:
                 else h("por noite ocupada")
             ),
         },
-    ])
+    ], compacto=True)
 
     # ----- Progresso face ao ano anterior -----
 
