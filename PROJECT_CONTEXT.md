@@ -152,9 +152,10 @@ Importação de CSV
 
 ## 7. Separadores da app
 
-1. Resumo anual: indicadores, evolução por ano, progresso acumulado face ao
-   ano anterior com a linha do objetivo, rendimento por alojamento e
-   proprietário.
+1. Resumo anual: indicadores, evolução por ano (com o número de alojamentos
+   ativos em cada ano), progresso face ao ano anterior com a linha do
+   objetivo (mês a mês por omissão, com um interruptor para ver acumulado),
+   rendimento por alojamento e proprietário.
 2. Calendário: uma linha por alojamento, entradas e saídas dos próximos 14
    dias, noites livres dos próximos 30. Com iCal mostra também bloqueios e
    reservas ainda não importadas.
@@ -167,6 +168,10 @@ Importação de CSV
    Airbnb mês a mês.
 7. Taxa turística: estimativa e valores reais por mês.
 8. Dados: nomes, proprietários, estado dos anúncios, iCal, SQL, regras.
+
+Aspeto: os gráficos de barras de rendimento usam um degradê magenta → rosa →
+coral, como os do Airbnb. O Plotly não pinta degradês numa barra, por isso
+cada barra é desenhada em camadas sobrepostas (`barras_degrade`).
 
 ## 8. Forma de trabalhar
 

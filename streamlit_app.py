@@ -458,6 +458,77 @@ def estilo_grafico(figura, altura=380):
     return figura
 
 
+# Degradê das barras: magenta em baixo, rosa a meio, coral em cima.
+DEGRADE = [(0.0, (180, 48, 159)), (0.55, (226, 32, 123)), (1.0, (242, 68, 78))]
+
+
+def cor_degrade(fracao):
+    fracao = max(0.0, min(1.0, fracao))
+    for (inicio, cor_a), (fim, cor_b) in zip(DEGRADE, DEGRADE[1:]):
+        if fracao <= fim:
+            peso = (fracao - inicio) / (fim - inicio)
+            canais = [round(a + (b - a) * peso) for a, b in zip(cor_a, cor_b)]
+            return "rgb({},{},{})".format(*canais)
+    return "rgb({},{},{})".format(*DEGRADE[-1][1])
+
+
+def barras_degrade(figura, x, valores, nome, futuros=None, casas=0, passos=28):
+    """Barras com degradê vertical, como nos gráficos do Airbnb.
+
+    O Plotly não pinta degradês dentro de uma barra, por isso cada barra é
+    desenhada em camadas sobrepostas, da mais alta para a mais baixa, cada
+    uma com a cor da sua altura. A cor depende da altura no gráfico: as
+    barras maiores chegam ao coral, as pequenas ficam em magenta.
+
+    futuros  valores a empilhar por cima, em rosa claro (reservas futuras)
+    """
+    x = list(x)
+    valores = [0.0 if pd.isna(valor) else float(valor) for valor in valores]
+    futuros = (
+        [0.0] * len(valores) if futuros is None
+        else [0.0 if pd.isna(valor) else float(valor) for valor in futuros]
+    )
+    maximo = max([a + b for a, b in zip(valores, futuros)] + [1e-9])
+
+    for passo in range(passos, 0, -1):
+        topo = maximo * passo / passos
+        base_camada = maximo * (passo - 1) / passos
+        if not any(valor > base_camada for valor in valores):
+            continue
+        figura.add_bar(
+            x=x,
+            y=[min(valor, topo) if valor > base_camada else 0.0 for valor in valores],
+            marker_color=cor_degrade((passo - 0.5) / passos),
+            marker_line_width=0,
+            hoverinfo="skip",
+            showlegend=False,
+        )
+
+    if any(futuros):
+        figura.add_bar(
+            x=x,
+            y=futuros,
+            base=valores,
+            name="Reservas futuras",
+            marker_color="rgba(226,32,123,0.14)",
+            marker_line_color="rgb(226,32,123)",
+            marker_line_width=1,
+            hovertemplate="%{y:,." + str(casas) + "f} €<extra>Reservas futuras</extra>",
+        )
+
+    # Barra transparente por cima de tudo: é ela que responde ao rato.
+    figura.add_bar(
+        x=x,
+        y=valores,
+        name=nome,
+        marker_color="rgba(0,0,0,0)",
+        marker_line_width=0,
+        showlegend=False,
+        hovertemplate="%{y:,." + str(casas) + "f} €<extra>" + nome + "</extra>",
+    )
+    figura.update_layout(barmode="overlay")
+
+
 def mostrar_grafico(figura):
     st.plotly_chart(
         figura, use_container_width=True, config={"displayModeBar": False},
@@ -1368,29 +1439,27 @@ with aba_desempenho:
     )
 
     figura_anos = go.Figure()
-    figura_anos.add_bar(
-        x=[str(valor) for valor in anos_evolucao],
-        y=[resumos_anos[valor]["realizado"] for valor in anos_evolucao],
-        name="Realizado",
-        marker_color=[
-            COR_PRINCIPAL if valor == ano else COR_ANTERIOR
-            for valor in anos_evolucao
-        ],
-        hovertemplate="%{y:,.0f} €<extra>Realizado</extra>",
+    barras_degrade(
+        figura_anos,
+        [str(valor) for valor in anos_evolucao],
+        [resumos_anos[valor]["realizado"] for valor in anos_evolucao],
+        "Realizado",
+        futuros=[resumos_anos[valor]["futuro"] for valor in anos_evolucao],
     )
-    figura_anos.add_bar(
+    figura_anos.add_scatter(
         x=[str(valor) for valor in anos_evolucao],
-        y=[resumos_anos[valor]["futuro"] for valor in anos_evolucao],
-        name="Reservas futuras",
-        marker_color=COR_FUTURO,
+        y=[resumos_anos[valor]["liquido"] for valor in anos_evolucao],
+        mode="text",
         text=[
             etiqueta_euros(resumos_anos[valor]["liquido"]) for valor in anos_evolucao
         ],
-        textposition="outside",
+        textposition="top center",
+        textfont=dict(size=12, color=COR_TEXTO),
+        showlegend=False,
+        hoverinfo="skip",
         cliponaxis=False,
-        hovertemplate="%{y:,.0f} €<extra>Reservas futuras</extra>",
     )
-    figura_anos.update_layout(barmode="stack", showlegend=False, bargap=0.45)
+    figura_anos.update_layout(showlegend=False, bargap=0.45)
     figura_anos.update_xaxes(type="category")
     mostrar_grafico(estilo_grafico(figura_anos, altura=320))
 
@@ -1398,8 +1467,13 @@ with aba_desempenho:
     for posicao, valor in enumerate(anos_evolucao):
         resumo_ano = resumos_anos[valor]
         antes_ano = resumos_anos[anos_evolucao[posicao - 1]] if posicao else None
+        ativos = sum(
+            1 for listing in selecionados
+            if (noites_por_listing[listing]["Data"].dt.year == valor).any()
+        )
         linhas_anos.append([
             h(valor),
+            h(ativos) if len(selecionados) > 1 else None,
             f'<span class="ad-forte">{c_euros(resumo_ano["liquido"])}</span>',
             # Um ano que ainda não começou não se compara nem tem ocupação.
             c_diferenca(resumo_ano["liquido"] - antes_ano["liquido"])
@@ -1411,12 +1485,16 @@ with aba_desempenho:
         ])
     tabela_html(
         [
-            "Ano", "Rendimento líquido", "Face ao ano anterior", "Noites",
+            "Ano", "Alojamentos ativos" if len(selecionados) > 1 else None,
+            "Rendimento líquido", "Face ao ano anterior", "Noites",
             "Ocupação", "Média por noite", "Taxa turística",
         ],
         linhas_anos,
     )
     st.caption(
+        "A ocupação de cada ano só conta os alojamentos que já existiam: "
+        "cada um entra a partir da sua primeira noite reservada (as datas "
+        "estão no separador Dados). "
         "Estes valores são diferentes dos do Airbnb por três razões: aqui não "
         "entra a taxa turística, cada noite conta no mês em que acontece (o "
         "Airbnb conta o pagamento inteiro no dia a seguir à entrada) e os "
@@ -1427,14 +1505,24 @@ with aba_desempenho:
     # ----- Progresso face ao ano anterior -----
 
     if mensal_anterior["Total líquido (€)"].sum() > 0:
-        seccao(
-            f"Progresso de {ano} face a {ano_anterior}",
-            "Rendimento acumulado desde janeiro. A linha tracejada é o "
-            f"objetivo: {ano_anterior} mais 10 %.",
+        ver_acumulado = st.toggle(
+            "Ver acumulado desde janeiro", value=False, key="progresso_acumulado",
         )
 
-        acumulado_ano = mensal["Total líquido (€)"].astype(float).cumsum()
-        acumulado_anterior = mensal_anterior["Total líquido (€)"].astype(float).cumsum()
+        seccao(
+            f"Progresso de {ano} face a {ano_anterior}",
+            (
+                "Rendimento acumulado desde janeiro."
+                if ver_acumulado else "Rendimento de cada mês."
+            )
+            + f" A linha tracejada é o objetivo: {ano_anterior} mais 10 %.",
+        )
+
+        acumulado_ano = mensal["Total líquido (€)"].astype(float)
+        acumulado_anterior = mensal_anterior["Total líquido (€)"].astype(float)
+        if ver_acumulado:
+            acumulado_ano = acumulado_ano.cumsum()
+            acumulado_anterior = acumulado_anterior.cumsum()
 
         figura_progresso = go.Figure()
         figura_progresso.add_scatter(
@@ -1802,19 +1890,12 @@ with aba_mensal:
     )
 
     figura = go.Figure()
-    figura.add_bar(
-        x=MESES_CURTOS,
-        y=mensal["Realizado líquido (€)"],
-        name="Realizado",
-        marker_color=COR_PRINCIPAL,
-        hovertemplate="%{y:,.0f} €<extra>Realizado</extra>",
-    )
-    figura.add_bar(
-        x=MESES_CURTOS,
-        y=mensal["Futuro líquido (€)"],
-        name="Reservas futuras",
-        marker_color=COR_FUTURO,
-        hovertemplate="%{y:,.0f} €<extra>Reservas futuras</extra>",
+    barras_degrade(
+        figura,
+        MESES_CURTOS,
+        mensal["Realizado líquido (€)"],
+        "Realizado",
+        futuros=mensal["Futuro líquido (€)"],
     )
     figura.add_scatter(
         x=MESES_CURTOS,
@@ -1837,7 +1918,6 @@ with aba_mensal:
             marker=dict(size=6),
             hovertemplate="%{y:,.0f} €<extra>" + str(ano_anterior) + "</extra>",
         )
-    figura.update_layout(barmode="stack")
     mostrar_grafico(estilo_grafico(figura, altura=400))
 
     seccao("Ocupação por mês", "Noites ocupadas em cada mês, em percentagem.")
@@ -2009,15 +2089,26 @@ with aba_mensal:
     )
 
     figura_media = go.Figure()
-    figura_media.add_bar(
+    barras_degrade(
+        figura_media,
+        MESES_CURTOS,
+        mensal["Média líquida/noite (€)"],
+        f"Média {ano}",
+        casas=2,
+    )
+    figura_media.add_scatter(
         x=MESES_CURTOS,
         y=mensal["Média líquida/noite (€)"],
-        name=f"Média {ano}",
-        marker_color=COR_PRINCIPAL,
+        mode="text",
         text=mensal["Média líquida/noite (€)"].map(etiqueta_euros),
-        textposition="outside",
+        # Com a melhor noite marcada por cima, a etiqueta vai dentro da barra.
+        textposition="bottom center" if alojamento_unico else "top center",
+        textfont=dict(
+            size=11, color="#FFFFFF" if alojamento_unico else COR_SUAVE,
+        ),
+        showlegend=False,
+        hoverinfo="skip",
         cliponaxis=False,
-        hovertemplate="%{y:,.2f} €<extra>Média " + str(ano) + "</extra>",
     )
     if alojamento_unico:
         figura_media.add_scatter(
@@ -3600,6 +3691,11 @@ with aba_dados:
         ],
         "Reservas": [len(reservas_por_listing[l]) for l in todos_listings],
         "Estado": [estado_listing(l) for l in todos_listings],
+        "Primeira noite": [
+            f"{noites_por_listing[l]['Data'].min():%d/%m/%Y}"
+            if len(noites_por_listing[l]) else "—"
+            for l in todos_listings
+        ],
         "Última atualização": [
             f"{ultimas_atualizacoes[l]:%d/%m/%Y} ({texto_dias(dias_desde_atualizacao(l))})"
             if l in ultimas_atualizacoes else "—"
@@ -3611,7 +3707,8 @@ with aba_dados:
         editor_propriedades = st.data_editor(
             base_propriedades,
             disabled=[
-                "Anúncio no Airbnb", "Reservas", "Estado", "Última atualização",
+                "Anúncio no Airbnb", "Reservas", "Estado", "Primeira noite",
+                "Última atualização",
             ],
             hide_index=True,
             use_container_width=True,
