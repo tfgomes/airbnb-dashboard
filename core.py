@@ -676,6 +676,21 @@ def pagamentos_mensais(reservas, ano):
     return [float(somas.get(mes, 0.0)) for mes in range(1, 13)]
 
 
+def pagamentos_estado(reservas, ano, hoje):
+    """(já pago, por pagar) no ano, pela regra do Airbnb.
+
+    Cada reserva é paga no dia a seguir à entrada; conta como paga se esse
+    dia já chegou.
+    """
+    if not len(reservas):
+        return 0.0, 0.0
+    pagamento = reservas["Entrada"] + pd.Timedelta(days=1)
+    do_ano = pagamento.dt.year == int(ano)
+    pago = reservas.loc[do_ano & (pagamento <= hoje), "Valor bruto"].sum()
+    por_pagar = reservas.loc[do_ano & (pagamento > hoje), "Valor bruto"].sum()
+    return float(pago), float(por_pagar)
+
+
 # =========================================================
 # PLANO DE PREÇOS
 # =========================================================

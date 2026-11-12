@@ -450,3 +450,12 @@ def test_formatos_guardados_dos_custos():
     assert sum(valor or 0 for valor in meses) == 276.0 and anualizar
     assert core.meses_do_registo({}) == ([None] * 12, False)
     assert all(len(linha) == 3 for linha in core.CUSTOS_SUGERIDOS)
+
+
+def test_pago_e_por_pagar_como_no_airbnb(reservas):
+    # Em 12/11/2026 o Airbnb mostrava 32.107,06 € pagos e 245,89 € por pagar,
+    # já com os 184,50 € de AirCover (que não vêm nos CSV).
+    pago, por_pagar = core.pagamentos_estado(reservas, 2026, pd.Timestamp("2026-11-12"))
+    assert por_pagar == pytest.approx(245.89, abs=0.005)
+    assert pago + 184.50 == pytest.approx(32107.06, abs=0.005)
+    assert pago + por_pagar == pytest.approx(sum(core.pagamentos_mensais(reservas, 2026)))
