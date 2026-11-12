@@ -158,7 +158,11 @@ def preparar_csv(ficheiro):
             f"Existem quantidades de hóspedes inválidas em {nome}."
         )
 
-    dados["Cêntimos"] = dados["Earnings"].map(converter_earnings_para_centimos)
+    # astype explícito: num ficheiro em que nenhuma reserva tem valor a coluna
+    # fica vazia e, sem isto, continuaria a ser texto.
+    dados["Cêntimos"] = (
+        dados["Earnings"].map(converter_earnings_para_centimos).astype("int64")
+    )
     dados["Valor bruto"] = dados["Cêntimos"] / 100
 
     dados["Noites"] = dados["Noites"].astype(int)

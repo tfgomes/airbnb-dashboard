@@ -215,3 +215,21 @@ def test_datas_impossiveis_sao_recusadas(tmp_path):
     ])
     with pytest.raises(ValueError, match="datas ou noites inválidas"):
         core.preparar_csv(mau)
+
+
+def test_ficheiro_so_com_reservas_sem_valor(tmp_path):
+    vazio = _csv(tmp_path, "antigas.csv", [
+        '"HMAAA","Past guest","X","","0","0","0","03/01/2026","05/01/2026","2","","Casa",""',
+        '"HMBBB","Past guest","Y","","0","0","0","06/01/2026","09/01/2026","3","","Casa",""',
+    ])
+    bom = _csv(tmp_path, "bom.csv", [
+        '"HMCCC","Confirmed","Z","","2","0","0","4/3/2027","4/10/2027","7","","Casa","€500.00"',
+    ])
+
+    so_vazio = core.preparar_lote_csv([vazio])
+    assert len(so_vazio) == 0 and so_vazio.attrs["ignoradas"] == 2
+    assert core.dataframe_para_registos(so_vazio, "x") == []
+
+    lote = core.preparar_lote_csv([vazio, bom])
+    assert len(lote) == 1 and lote.attrs["ignoradas"] == 2
+    assert lote.iloc[0]["Valor bruto"] == 500.0

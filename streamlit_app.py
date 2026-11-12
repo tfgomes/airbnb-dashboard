@@ -1,5 +1,6 @@
 import base64
 import html
+import importlib
 import re
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,11 @@ import streamlit as st
 from supabase import create_client
 
 import core
+
+# Depois de um deploy, o Streamlit pode manter em memória a versão antiga de
+# core.py. Recarregar aqui garante que a app usa sempre a versão atual.
+core = importlib.reload(core)
+
 from core import (
     MESES,
     MESES_CURTOS,
