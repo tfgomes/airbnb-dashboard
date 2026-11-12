@@ -1177,7 +1177,8 @@ with st.sidebar:
     donos_presentes += sorted(donos_em_uso - set(PROPRIETARIOS))
 
     if len(listings) > 1 and len(donos_presentes) > 1:
-        carteira = st.radio("Carteira", [TODOS] + donos_presentes, horizontal=True)
+        # O primeiro (Tiago) é o que abre por omissão; "Todos" fica no fim.
+        carteira = st.radio("Carteira", donos_presentes + [TODOS], horizontal=True)
     else:
         carteira = TODOS
 
@@ -1969,6 +1970,10 @@ with aba_mensal:
             offset=0.02,
             marker_color="#B9A7C9",
             marker_line_width=0,
+            text=mensal_anterior["Total líquido (€)"].map(etiqueta_euros),
+            textposition="outside",
+            textfont=dict(size=11, color=COR_SUAVE),
+            cliponaxis=False,
             hovertemplate="%{y:,.0f} €<extra>" + str(ano_anterior) + "</extra>",
         )
     mostrar_grafico(estilo_grafico(figura, altura=400))
@@ -2478,6 +2483,9 @@ with aba_precos:
     figura_plano.add_bar(
         x=MESES_CURTOS, y=referencia_mensal, name="Referência",
         marker_color=COR_NEUTRA,
+        text=[etiqueta_euros(valor) for valor in referencia_mensal],
+        textposition="outside", cliponaxis=False,
+        textfont=dict(size=11, color=COR_SUAVE),
         hovertemplate="%{y:,.0f} €<extra>Referência</extra>",
     )
     figura_plano.add_bar(
@@ -3737,8 +3745,8 @@ with aba_dados:
         {"rotulo": "Alojamentos", "valor": inteiro(len(listings)), "nota": ""},
         {
             "rotulo": "Proprietários",
-            "valor": inteiro(propriedades["Proprietário"].nunique()),
-            "nota": h(" · ".join(sorted(set(propriedades["Proprietário"])))),
+            "valor": inteiro(len(donos_presentes)),
+            "nota": h(" · ".join(donos_presentes)),
         },
     ])
 
@@ -3826,8 +3834,10 @@ with aba_dados:
 
     seccao(
         "Calendário do Airbnb (iCal)",
-        "As ligações iCal ficam nos Secrets do Streamlit, não no código. "
-        "Cada linha usa o início do nome curto do alojamento.",
+        "Com as ligações iCal, o separador Calendário mostra também os "
+        "dias bloqueados e as reservas ainda não importadas. As ligações "
+        "têm uma chave privada, por isso guardam-se nos Secrets do "
+        "Streamlit e não no código.",
     )
 
     ligacoes_guardadas = ligacoes_ical()
@@ -3844,11 +3854,26 @@ with aba_dados:
             for listing in listings
         ],
     )
-    st.code(
-        '[ical]\n"t1+1" = "https://www.airbnb.com/calendar/ical/....ics?s=...."\n'
-        '"t2" = "https://www.airbnb.com/calendar/ical/....ics?s=...."',
-        language="toml",
-    )
+    em_falta_ical = [
+        codigo_foto(propriedades.loc[listing, "Nome"])
+        for listing in listings
+        if codigo_foto(propriedades.loc[listing, "Nome"]) not in ligacoes_guardadas
+    ]
+    if em_falta_ical:
+        st.caption(
+            "Para configurar as que estão em falta: no Streamlit, abre "
+            "Manage app → Settings → Secrets e acrescenta um bloco como o de "
+            "baixo, trocando cada endereço pela ligação iCal que o Airbnb dá "
+            "ao exportar o calendário desse alojamento. É só um modelo para "
+            "copiares."
+        )
+        st.code(
+            "[ical]\n" + "\n".join(
+                f'"{codigo}" = "https://www.airbnb.com/calendar/ical/....ics?s=...."'
+                for codigo in em_falta_ical
+            ),
+            language="toml",
+        )
 
     seccao("Regras aplicadas")
     st.markdown(
