@@ -205,7 +205,7 @@ section[data-testid="stSidebar"] { background: #FAFAFA; border-right: 1px solid 
 .ad-celula-foto { display: inline-flex; align-items: center; gap: 10px; }
 .ad-tabela-caixa { border: 1px solid #EBEBEB; border-radius: 18px; overflow-x: auto; background: #FFFFFF; margin: 0.4rem 0 0.7rem 0; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
 .ad-tabela-caixa table.ad-tabela { width: 100%; border-collapse: collapse; font-size: 0.9rem; font-variant-numeric: tabular-nums; margin: 0; }
-.ad-tabela-caixa table.ad-tabela th { text-align: right; font-weight: 600; font-size: 0.7rem; letter-spacing: 0.04em; text-transform: uppercase; color: #6A6A6A; padding: 12px 12px; border: none !important; border-bottom: 1px solid #EBEBEB !important; white-space: nowrap; background: #FAFAFA; }
+.ad-tabela-caixa table.ad-tabela th { text-align: right; font-weight: 600; font-size: 0.7rem; letter-spacing: 0.04em; text-transform: uppercase; color: #FFFFFF; padding: 12px 12px; border: none !important; white-space: nowrap; background: #1F3A5F; }
 .ad-tabela-caixa table.ad-tabela td { text-align: right; padding: 10px 12px; border: none !important; border-bottom: 1px solid #F2F2F2 !important; white-space: nowrap; color: #222222; }
 .ad-tabela-caixa table.ad-tabela th.esq, .ad-tabela-caixa table.ad-tabela td.esq { text-align: left; }
 .ad-tabela-caixa table.ad-tabela td.esq { font-weight: 600; }
@@ -380,15 +380,35 @@ def c_variacao(valor):
     return f'<span class="ad-pill {classe}">{h(texto_variacao(valor))}</span>'
 
 
-def c_barra(valor, rosa=False):
-    """Percentagem com uma barra pequena ao lado."""
+COR_OCUPACAO_CHEIA = "#008A05"
+COR_OCUPACAO_ALTA = "#7CC47F"
+COR_OCUPACAO_BAIXA = "#F0A030"
+
+
+def cor_ocupacao(valor):
+    """Verde a 100 %, verde claro de 90 % a 99 %, laranja abaixo de 90 %."""
+    if valor is None or pd.isna(valor):
+        return COR_NEUTRA
+    if valor >= 99.5:
+        return COR_OCUPACAO_CHEIA
+    return COR_OCUPACAO_ALTA if valor >= 90 else COR_OCUPACAO_BAIXA
+
+
+def c_barra(valor, rosa=False, ocupacao=False):
+    """Percentagem com uma barra pequena ao lado.
+
+    ocupacao=True pinta a barra com as cores da ocupação.
+    """
     if valor is None or pd.isna(valor):
         return "—"
     largura = max(0.0, min(100.0, float(valor)))
     classe = "ad-mini rosa" if rosa else "ad-mini"
+    estilo = f"width:{largura:.0f}%"
+    if ocupacao:
+        estilo += f";background:{cor_ocupacao(float(valor))}"
     return (
         f'<span class="{classe}">{h(percentagem(valor, 0))}'
-        f'<i><b style="width:{largura:.0f}%"></b></i></span>'
+        f'<i><b style="{estilo}"></b></i></span>'
     )
 
 
@@ -472,7 +492,10 @@ def cor_degrade(fracao):
     return "rgb({},{},{})".format(*DEGRADE[-1][1])
 
 
-def barras_degrade(figura, x, valores, nome, futuros=None, casas=0, passos=28):
+def barras_degrade(
+    figura, x, valores, nome, futuros=None, casas=0, passos=28,
+    largura=None, desvio=None, rotulos=None,
+):
     """Barras com degradê vertical, como nos gráficos do Airbnb.
 
     O Plotly não pinta degradês dentro de uma barra, por isso cada barra é
@@ -481,7 +504,16 @@ def barras_degrade(figura, x, valores, nome, futuros=None, casas=0, passos=28):
     barras maiores chegam ao coral, as pequenas ficam em magenta.
 
     futuros  valores a empilhar por cima, em rosa claro (reservas futuras)
+    largura, desvio  largura da barra e deslocamento para o lado (em
+             frações de uma categoria), para pôr outra série ao lado
+    rotulos  textos a escrever por cima de cada barra
     """
+    posicao = {}
+    if largura is not None:
+        posicao["width"] = largura
+    if desvio is not None:
+        posicao["offset"] = desvio
+
     x = list(x)
     valores = [0.0 if pd.isna(valor) else float(valor) for valor in valores]
     futuros = (
@@ -502,6 +534,7 @@ def barras_degrade(figura, x, valores, nome, futuros=None, casas=0, passos=28):
             marker_line_width=0,
             hoverinfo="skip",
             showlegend=False,
+            **posicao,
         )
 
     if any(futuros):
@@ -514,6 +547,7 @@ def barras_degrade(figura, x, valores, nome, futuros=None, casas=0, passos=28):
             marker_line_color="rgb(226,32,123)",
             marker_line_width=1,
             hovertemplate="%{y:,." + str(casas) + "f} €<extra>Reservas futuras</extra>",
+            **posicao,
         )
 
     # Barra transparente por cima de tudo: é ela que responde ao rato.
@@ -525,7 +559,24 @@ def barras_degrade(figura, x, valores, nome, futuros=None, casas=0, passos=28):
         marker_line_width=0,
         showlegend=False,
         hovertemplate="%{y:,." + str(casas) + "f} €<extra>" + nome + "</extra>",
+        **posicao,
     )
+
+    if rotulos is not None:
+        # Outra barra transparente, com a altura total, só para o texto.
+        figura.add_bar(
+            x=x,
+            y=[a + b for a, b in zip(valores, futuros)],
+            text=list(rotulos),
+            textposition="outside",
+            textfont=dict(size=11, color=COR_SUAVE),
+            cliponaxis=False,
+            marker_color="rgba(0,0,0,0)",
+            marker_line_width=0,
+            showlegend=False,
+            hoverinfo="skip",
+            **posicao,
+        )
     figura.update_layout(barmode="overlay")
 
 
@@ -1479,7 +1530,8 @@ with aba_desempenho:
             c_diferenca(resumo_ano["liquido"] - antes_ano["liquido"])
             if antes_ano and valor <= HOJE.year else "—",
             h(inteiro(resumo_ano["noites"])),
-            c_barra(resumo_ano["ocupacao"]) if valor <= HOJE.year else "—",
+            c_barra(resumo_ano["ocupacao"], ocupacao=True)
+            if valor <= HOJE.year else "—",
             c_euros(resumo_ano["media_noite"]),
             c_euros(resumo_ano["taxa"]),
         ])
@@ -1855,7 +1907,7 @@ with aba_calendario:
         linhas_livres.append([
             c_alojamento(propriedades.loc[listing, "Nome"]),
             f'<span class="ad-forte">{livres}</span>',
-            c_barra(100 * (30 - livres) / 30),
+            c_barra(100 * (30 - livres) / 30, ocupacao=True),
             h(" · ".join(texto_periodo(*periodo) for periodo in periodos) or "—"),
         ])
 
@@ -1885,49 +1937,55 @@ with aba_mensal:
 
     seccao(
         f"Rendimento por mês · {ano} e {ano_anterior}",
-        "Barras: este ano (a parte clara são reservas futuras). Linha: o "
-        "mesmo mês do ano anterior. Cada noite conta no mês em que acontece.",
+        "Barra colorida: este ano (a parte clara são reservas futuras). "
+        "Barra lilás: o mesmo mês do ano anterior. Cada noite conta no mês "
+        "em que acontece.",
     )
 
     figura = go.Figure()
+    tem_anterior = mensal_anterior["Total líquido (€)"].sum() > 0
+
+    # Com ano anterior, duas barras lado a lado em cada mês.
     barras_degrade(
         figura,
         MESES_CURTOS,
         mensal["Realizado líquido (€)"],
-        "Realizado",
+        str(ano),
         futuros=mensal["Futuro líquido (€)"],
+        rotulos=mensal["Total líquido (€)"].map(etiqueta_euros),
+        largura=0.42 if tem_anterior else None,
+        desvio=-0.44 if tem_anterior else None,
     )
-    figura.add_scatter(
-        x=MESES_CURTOS,
-        y=mensal["Total líquido (€)"],
-        mode="text",
-        text=mensal["Total líquido (€)"].map(etiqueta_euros),
-        textposition="top center",
-        textfont=dict(size=11, color=COR_SUAVE),
-        showlegend=False,
-        hoverinfo="skip",
-        cliponaxis=False,
+    # Entrada da legenda para as barras em degradê.
+    figura.add_bar(
+        x=[None], y=[None], name=str(ano), marker_color=cor_degrade(0.6),
     )
-    if mensal_anterior["Total líquido (€)"].sum() > 0:
-        figura.add_scatter(
+    if tem_anterior:
+        figura.add_bar(
             x=MESES_CURTOS,
             y=mensal_anterior["Total líquido (€)"],
             name=str(ano_anterior),
-            mode="lines+markers",
-            line=dict(color=COR_ANTERIOR, width=2.5, shape="spline", smoothing=0.6),
-            marker=dict(size=6),
+            width=0.42,
+            offset=0.02,
+            marker_color="#B9A7C9",
+            marker_line_width=0,
             hovertemplate="%{y:,.0f} €<extra>" + str(ano_anterior) + "</extra>",
         )
     mostrar_grafico(estilo_grafico(figura, altura=400))
 
-    seccao("Ocupação por mês", "Noites ocupadas em cada mês, em percentagem.")
+    seccao(
+        "Ocupação por mês",
+        "Noites ocupadas em cada mês. Verde: 100 %. Verde claro: 90 % a "
+        "99 %. Laranja: abaixo de 90 %.",
+    )
 
     figura_ocupacao = go.Figure()
     figura_ocupacao.add_bar(
         x=MESES_CURTOS,
         y=mensal["Ocupação (%)"],
         name=str(ano),
-        marker_color=COR_TEXTO,
+        marker_color=[cor_ocupacao(valor) for valor in mensal["Ocupação (%)"]],
+        showlegend=False,
         text=mensal["Ocupação (%)"].map(
             lambda valor: "" if pd.isna(valor) or valor == 0 else f"{valor:.0f}%"
         ),
@@ -2045,7 +2103,8 @@ with aba_mensal:
         celulas_linha = [
             h(MESES[indice]),
             h(inteiro(linha["Noites"])) if linha["Noites"] else "—",
-            c_barra(linha["Ocupação (%)"]) if linha["Noites"] else "—",
+            c_barra(linha["Ocupação (%)"], ocupacao=True)
+            if linha["Noites"] else "—",
             h(inteiro(linha["Reservas"])) if linha["Reservas"] else "—",
             h(decimal(linha["Duração média"])),
         ]
@@ -2066,7 +2125,7 @@ with aba_mensal:
     total_noites = [
         "Total",
         h(inteiro(anual["noites"])),
-        c_barra(anual["ocupacao"]),
+        c_barra(anual["ocupacao"], ocupacao=True),
         h(inteiro(anual["reservas"])),
         h(decimal(
             mensal["Soma durações"].sum() / anual["reservas"]
@@ -2860,7 +2919,7 @@ with aba_custos:
                 ),
                 **{
                     mes: st.column_config.NumberColumn(
-                        min_value=0.0, step=1.0, format="%.2f",
+                        min_value=0.0, step=0.01, format="%.2f",
                     )
                     for mes in MESES_CURTOS
                 },
@@ -3362,13 +3421,13 @@ with aba_reconciliacao:
                         format="%.2f €",
                     ),
                     "Reembolso (€)": st.column_config.NumberColumn(
-                        min_value=0.0, step=1.0, format="%.2f €",
+                        min_value=0.0, step=0.01, format="%.2f €",
                         help="O que devolveste a um hóspede.",
                     ),
                     **(
                         {
                             "Outros rendimentos (€)": st.column_config.NumberColumn(
-                                min_value=0.0, step=1.0, format="%.2f €",
+                                min_value=0.0, step=0.01, format="%.2f €",
                                 help=(
                                     "O que o Airbnb te pagou fora das reservas, "
                                     "por exemplo AirCover por danos."
@@ -3577,7 +3636,7 @@ with aba_taxa:
                     format="%.2f €",
                 ),
                 "Ajuste manual (€)": st.column_config.NumberColumn(
-                    min_value=0.0, step=1.0, format="%.2f €",
+                    min_value=0.0, step=0.01, format="%.2f €",
                 ),
                 "Taxa utilizada (€)": st.column_config.NumberColumn(
                     format="%.2f €",
