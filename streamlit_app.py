@@ -79,6 +79,10 @@ COR_NEUTRA = "#DDDDDD"
 COR_TEXTO = "#222222"
 COR_SUAVE = "#6A6A6A"
 COR_GRELHA = "#EBEBEB"
+# Uma cor fixa por alojamento, pela ordem em que aparecem.
+CORES_ALOJAMENTO = [
+    "#E2207B", "#1F3A5F", "#F0A030", "#7B4FB5", "#008A8A", "#8C6D4F",
+]
 
 COLUNAS_RESERVAS = (
     "listing,confirmation_code,status,start_date,end_date,"
@@ -1388,6 +1392,7 @@ if tem_propriedades and por_configurar and len(listings) > 1:
 
 (
     aba_desempenho,
+    aba_todos,
     aba_calendario,
     aba_mensal,
     aba_precos,
@@ -1397,6 +1402,7 @@ if tem_propriedades and por_configurar and len(listings) > 1:
     aba_dados,
 ) = st.tabs([
     "Resumo anual",
+    "Todos os apartamentos",
     "Calendário",
     "Mensal",
     "Plano de preços",
@@ -1471,6 +1477,57 @@ with aba_desempenho:
             f"reembolsos enviados {euros(anual['reembolsos'])}. "
             f"Total do ano com estes movimentos: {euros(anual['total'])}."
         )
+
+    # ----- Progresso face ao ano anterior -----
+
+    if mensal_anterior["Total líquido (€)"].sum() > 0:
+        ver_acumulado = st.toggle(
+            "Ver acumulado desde janeiro", value=False, key="progresso_acumulado",
+        )
+
+        seccao(
+            f"Progresso de {ano} face a {ano_anterior}",
+            (
+                "Rendimento acumulado desde janeiro."
+                if ver_acumulado else "Rendimento de cada mês."
+            )
+            + f" A linha tracejada é o objetivo: {ano_anterior} mais 10 %.",
+        )
+
+        acumulado_ano = mensal["Total líquido (€)"].astype(float)
+        acumulado_anterior = mensal_anterior["Total líquido (€)"].astype(float)
+        if ver_acumulado:
+            acumulado_ano = acumulado_ano.cumsum()
+            acumulado_anterior = acumulado_anterior.cumsum()
+
+        figura_progresso = go.Figure()
+        figura_progresso.add_scatter(
+            x=MESES_CURTOS, y=acumulado_anterior * 1.10,
+            name=f"Objetivo ({ano_anterior} + 10 %)",
+            mode="lines",
+            line=dict(color=COR_SUAVE, width=1.5, dash="dash"),
+            hovertemplate="%{y:,.0f} €<extra>Objetivo</extra>",
+        )
+        figura_progresso.add_scatter(
+            x=MESES_CURTOS, y=acumulado_anterior,
+            name=str(ano_anterior),
+            mode="lines+markers",
+            line=dict(color=COR_ANTERIOR, width=2.5),
+            hovertemplate="%{y:,.0f} €<extra>" + str(ano_anterior) + "</extra>",
+        )
+        figura_progresso.add_scatter(
+            x=MESES_CURTOS, y=acumulado_ano,
+            name=str(ano),
+            mode="lines+markers+text",
+            text=acumulado_ano.map(etiqueta_euros),
+            textposition="top center",
+            textfont=dict(size=11, color=COR_PRINCIPAL),
+            cliponaxis=False,
+            line=dict(color=COR_PRINCIPAL, width=3.5),
+            marker=dict(size=8),
+            hovertemplate="%{y:,.0f} €<extra>" + str(ano) + "</extra>",
+        )
+        mostrar_grafico(estilo_grafico(figura_progresso, altura=360))
 
     # ----- Evolução por ano -----
 
@@ -1555,54 +1612,6 @@ with aba_desempenho:
         "mês a mês, está no separador Reconciliação."
     )
 
-    # ----- Progresso face ao ano anterior -----
-
-    if mensal_anterior["Total líquido (€)"].sum() > 0:
-        ver_acumulado = st.toggle(
-            "Ver acumulado desde janeiro", value=False, key="progresso_acumulado",
-        )
-
-        seccao(
-            f"Progresso de {ano} face a {ano_anterior}",
-            (
-                "Rendimento acumulado desde janeiro."
-                if ver_acumulado else "Rendimento de cada mês."
-            )
-            + f" A linha tracejada é o objetivo: {ano_anterior} mais 10 %.",
-        )
-
-        acumulado_ano = mensal["Total líquido (€)"].astype(float)
-        acumulado_anterior = mensal_anterior["Total líquido (€)"].astype(float)
-        if ver_acumulado:
-            acumulado_ano = acumulado_ano.cumsum()
-            acumulado_anterior = acumulado_anterior.cumsum()
-
-        figura_progresso = go.Figure()
-        figura_progresso.add_scatter(
-            x=MESES_CURTOS, y=acumulado_anterior * 1.10,
-            name=f"Objetivo ({ano_anterior} + 10 %)",
-            mode="lines",
-            line=dict(color=COR_SUAVE, width=1.5, dash="dash"),
-            hovertemplate="%{y:,.0f} €<extra>Objetivo</extra>",
-        )
-        figura_progresso.add_scatter(
-            x=MESES_CURTOS, y=acumulado_anterior,
-            name=str(ano_anterior),
-            mode="lines+markers",
-            line=dict(color=COR_ANTERIOR, width=2.5),
-            hovertemplate="%{y:,.0f} €<extra>" + str(ano_anterior) + "</extra>",
-        )
-        figura_progresso.add_scatter(
-            x=MESES_CURTOS, y=acumulado_ano,
-            name=str(ano),
-            mode="lines+markers",
-            line=dict(color=COR_PRINCIPAL, width=3.5),
-            marker=dict(size=8),
-            hovertemplate="%{y:,.0f} €<extra>" + str(ano) + "</extra>",
-        )
-        mostrar_grafico(estilo_grafico(figura_progresso, altura=360))
-
-
     if len(selecionados) > 1:
         seccao("Rendimento por alojamento", f"Rendimento líquido de {ano}.")
 
@@ -1641,6 +1650,216 @@ with aba_desempenho:
                 ))
             barras_alojamentos(linhas_donos)
 
+
+
+# =========================================================
+# TODOS OS APARTAMENTOS
+# =========================================================
+
+with aba_todos:
+
+    # Esta página mostra sempre todos os alojamentos em uso, seja qual for
+    # a carteira escolhida na barra lateral.
+    seccao(
+        f"Todos os apartamentos · {ano}",
+        "Quanto rende cada apartamento e que parte do total representa. "
+        "Não depende da carteira escolhida na barra lateral.",
+    )
+
+    MODO_HOJE = "Até hoje"
+    MODO_ANO = "Ano inteiro, com as reservas futuras"
+    modo_todos = st.radio(
+        "Período", [MODO_HOJE, MODO_ANO], horizontal=True, key="modo_todos",
+    )
+    ate_hoje = modo_todos == MODO_HOJE
+    coluna_valor = "Realizado líquido (€)" if ate_hoje else "Total líquido (€)"
+
+    resumos_todos = []
+    for posicao, listing in enumerate(listings):
+        resumo_listing = core.resumo_anual(mensal_de(listing, ano), ano, HOJE)
+        resumos_todos.append({
+            "listing": listing,
+            "nome": propriedades.loc[listing, "Nome"],
+            "dono": propriedades.loc[listing, "Proprietário"],
+            "cor": CORES_ALOJAMENTO[posicao % len(CORES_ALOJAMENTO)],
+            "valor": resumo_listing["realizado"] if ate_hoje else resumo_listing["liquido"],
+            **resumo_listing,
+        })
+    resumos_todos.sort(key=lambda linha: linha["valor"], reverse=True)
+    total_todos = sum(linha["valor"] for linha in resumos_todos)
+
+    # O círculo ao centro; a tabela por baixo, com a largura toda.
+    _, coluna_circulo, _ = st.columns([1, 2.2, 1])
+
+    with coluna_circulo:
+        if total_todos > 0:
+            figura_circulo = go.Figure()
+            figura_circulo.add_pie(
+                labels=[linha["nome"] for linha in resumos_todos],
+                values=[linha["valor"] for linha in resumos_todos],
+                hole=0.58,
+                sort=False,
+                direction="clockwise",
+                marker=dict(
+                    colors=[linha["cor"] for linha in resumos_todos],
+                    line=dict(color="#FFFFFF", width=2),
+                ),
+                texttemplate="<b>%{label}</b><br>%{value:,.0f} €<br>%{percent}",
+                textposition="outside",
+                hovertemplate="%{label}<br>%{value:,.0f} €<br>%{percent}<extra></extra>",
+            )
+            figura_circulo.add_annotation(
+                text=(
+                    f"<b>{etiqueta_euros(total_todos)}</b><br>"
+                    + ("até hoje" if ate_hoje else "ano inteiro")
+                ),
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=17, color=COR_TEXTO),
+            )
+            figura_circulo.update_layout(
+                height=400,
+                margin=dict(t=40, r=40, b=40, l=40),
+                showlegend=False,
+                paper_bgcolor="rgba(0,0,0,0)",
+                separators=",.",
+                font=dict(
+                    family="Inter, Helvetica Neue, Arial, sans-serif",
+                    color=COR_TEXTO, size=12,
+                ),
+            )
+            mostrar_grafico(figura_circulo)
+        else:
+            st.caption("Ainda não há rendimento neste período.")
+
+    tabela_html(
+        [
+            "Apartamento", "Até hoje", "Reservas futuras", "Ano inteiro",
+            "Parte do total", "Noites", "Ocupação", "Média por noite",
+        ],
+        [
+            [
+                f'<span class="ad-celula-foto">'
+                f'<i style="display:inline-block;width:10px;height:10px;'
+                f'border-radius:50%;background:{linha["cor"]}"></i>'
+                + imagem_html(linha["nome"], "ad-miniatura")
+                + f'{h(linha["nome"])}</span>',
+                c_euros(linha["realizado"], 0),
+                c_euros(linha["futuro"], 0),
+                f'<span class="ad-forte">{c_euros(linha["liquido"], 0)}</span>',
+                h(percentagem(100 * linha["valor"] / total_todos if total_todos else None)),
+                h(inteiro(linha["noites"])),
+                c_barra(linha["ocupacao"], ocupacao=True)
+                if ano <= HOJE.year else "—",
+                c_euros(linha["media_noite"]),
+            ]
+            for linha in resumos_todos
+        ],
+        total=[
+            "Total",
+            c_euros(sum(linha["realizado"] for linha in resumos_todos), 0),
+            c_euros(sum(linha["futuro"] for linha in resumos_todos), 0),
+            c_euros(sum(linha["liquido"] for linha in resumos_todos), 0),
+            h(percentagem(100.0 if total_todos else None)),
+            h(inteiro(sum(linha["noites"] for linha in resumos_todos))),
+            "",
+            "",
+        ],
+    )
+    st.caption(
+        "\"Parte do total\" segue o período escolhido em cima. Valores "
+        "líquidos, sem taxa turística."
+    )
+
+    # ----- Mês a mês -----
+
+    seccao(
+        "Mês a mês",
+        (
+            "Rendimento já realizado de cada apartamento, empilhado por mês."
+            if ate_hoje else
+            "Rendimento de cada apartamento, empilhado por mês, com as "
+            "reservas futuras."
+        ),
+    )
+
+    figura_todos = go.Figure()
+    total_por_mes = pd.Series([0.0] * 12)
+    for linha in resumos_todos:
+        valores_mes = mensal_de(linha["listing"], ano)[coluna_valor].astype(float)
+        total_por_mes = total_por_mes + valores_mes.reset_index(drop=True)
+        figura_todos.add_bar(
+            x=MESES_CURTOS,
+            y=valores_mes,
+            name=linha["nome"],
+            marker_color=linha["cor"],
+            marker_line_width=0,
+            hovertemplate="%{y:,.0f} €<extra>" + linha["nome"] + "</extra>",
+        )
+    figura_todos.add_scatter(
+        x=MESES_CURTOS,
+        y=total_por_mes,
+        mode="text",
+        text=total_por_mes.map(etiqueta_euros),
+        textposition="top center",
+        textfont=dict(size=11, color=COR_SUAVE),
+        showlegend=False,
+        hoverinfo="skip",
+        cliponaxis=False,
+    )
+    figura_todos.update_layout(barmode="stack")
+    mostrar_grafico(estilo_grafico(figura_todos, altura=400))
+
+    colunas_todos = [
+        mensal_de(linha["listing"], ano)[coluna_valor].astype(float)
+        for linha in resumos_todos
+    ]
+    maximos_todos = [float(max(coluna.max(), 1.0)) for coluna in colunas_todos]
+
+    tabela_html(
+        ["Mês"] + [linha["nome"] for linha in resumos_todos] + ["Total"],
+        [
+            [h(MESES[indice])]
+            + [
+                c_calor(coluna.iloc[indice], maximo, 0)
+                for coluna, maximo in zip(colunas_todos, maximos_todos)
+            ]
+            + [f'<span class="ad-forte">{c_euros(total_por_mes.iloc[indice], 0)}</span>']
+            for indice in range(12)
+        ],
+        total=(
+            ["Total"]
+            + [c_euros(coluna.sum(), 0) for coluna in colunas_todos]
+            + [c_euros(total_por_mes.sum(), 0)]
+        ),
+        apagadas={
+            indice for indice in range(12) if total_por_mes.iloc[indice] < 0.005
+        },
+    )
+
+    seccao(
+        "Ocupação mês a mês",
+        "Verde: 100 %. Verde claro: 90 % a 99 %. Laranja: abaixo de 90 %.",
+    )
+
+    tabela_html(
+        ["Mês"] + [linha["nome"] for linha in resumos_todos],
+        [
+            [h(MESES[indice])]
+            + [
+                c_barra(
+                    mensal_de(linha["listing"], ano)["Ocupação (%)"].iloc[indice],
+                    ocupacao=True,
+                )
+                if mensal_de(linha["listing"], ano)["Noites"].iloc[indice] else "—"
+                for linha in resumos_todos
+            ]
+            for indice in range(12)
+        ],
+        total=["Ano"] + [
+            c_barra(linha["ocupacao"], ocupacao=True) if ano <= HOJE.year else "—"
+            for linha in resumos_todos
+        ],
+    )
 
 
 # =========================================================

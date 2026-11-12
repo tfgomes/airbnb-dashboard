@@ -152,22 +152,26 @@ Importação de CSV
 
 ## 7. Separadores da app
 
-1. Resumo anual: indicadores, evolução por ano (com o número de alojamentos
-   ativos em cada ano), progresso face ao ano anterior com a linha do
+1. Resumo anual: indicadores, progresso face ao ano anterior com a linha do
    objetivo (mês a mês por omissão, com um interruptor para ver acumulado),
+   evolução por ano (com o número de alojamentos ativos em cada ano),
    rendimento por alojamento e proprietário.
-2. Calendário: uma linha por alojamento, entradas e saídas dos próximos 14
+2. Todos os apartamentos: aparece sempre com os quatro, seja qual for a
+   carteira. Gráfico circular com o valor e a percentagem de cada um (até
+   hoje ou ano inteiro com reservas futuras), tabela comparativa, rendimento
+   e ocupação mês a mês por apartamento.
+3. Calendário: uma linha por alojamento, entradas e saídas dos próximos 14
    dias, noites livres dos próximos 30. Com iCal mostra também bloqueios e
    reservas ainda não importadas.
-3. Mensal: gráfico mês a mês com o ano anterior, tabelas de rendimento e
+4. Mensal: gráfico mês a mês com o ano anterior, tabelas de rendimento e
    acumulados, preço por noite (mínimo, média, máximo, potencial), matriz
    por alojamento.
-4. Plano de preços: resumo do ano e estratégia mês a mês com conselhos.
-5. Custos e ROI: por alojamento e ano.
-6. Reconciliação: totais, reembolsos e outros rendimentos, comparação com o
+5. Plano de preços: resumo do ano e estratégia mês a mês com conselhos.
+6. Custos e ROI: por alojamento e ano.
+7. Reconciliação: totais, reembolsos e outros rendimentos, comparação com o
    Airbnb mês a mês.
-7. Taxa turística: estimativa e valores reais por mês.
-8. Dados: nomes, proprietários, estado dos anúncios, iCal, SQL, regras.
+8. Taxa turística: estimativa e valores reais por mês.
+9. Dados: nomes, proprietários, estado dos anúncios, iCal, SQL, regras.
 
 Aspeto: os gráficos de barras de rendimento usam um degradê magenta → rosa →
 coral, como os do Airbnb. O Plotly não pinta degradês numa barra, por isso
