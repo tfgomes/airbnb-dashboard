@@ -335,3 +335,36 @@ def test_resultado_financeiro_reproduz_a_folha_de_calculo():
     assert real["irs"] == 1500 and real["usa_irs_real"]
     assert core.valor_anual(400, None) == 4800 and core.valor_anual(400, 5000) == 5000
     assert core.valor_anual(None, None) == 0
+
+
+def test_taxa_de_limpeza_baixa_o_preco_por_noite(reservas, noites):
+    base, _ = core.resumo_mensal(reservas, noites, 2026, ajustes(), HOJE)
+    anterior, _ = core.resumo_mensal(reservas, noites, 2025, {}, HOJE)
+    sem = core.plano_precos(base, anterior, None, 2027, HOJE, desconto=0.10)
+    com = core.plano_precos(
+        base, anterior, None, 2027, HOJE, desconto=0.10, taxa_limpeza=50.0,
+    )
+    agosto_sem, agosto_com = sem.iloc[7], com.iloc[7]
+
+    # O objetivo e o líquido necessário não mudam; só a forma de lá chegar.
+    assert agosto_com["Objetivo (€)"] == agosto_sem["Objetivo (€)"]
+    assert agosto_com["Líquido/noite necessário (€)"] == agosto_sem["Líquido/noite necessário (€)"]
+
+    estadia = agosto_com["Estadia média referência"]
+    assert estadia == pytest.approx(base.iloc[7]["Soma durações"] / base.iloc[7]["Reservas"])
+    assert agosto_com["Limpeza por noite (€)"] == pytest.approx(50 / estadia)
+    assert agosto_com["Preço mínimo (€)"] == pytest.approx(
+        agosto_sem["Preço mínimo (€)"] - 50 / estadia
+    )
+    # O desconto só se aplica ao preço por noite, não à taxa de limpeza.
+    assert agosto_com["Preço de tabela (€)"] == pytest.approx(
+        agosto_com["Preço mínimo (€)"] / 0.90
+    )
+
+    # Conferência: noites ao preço mínimo + taxas de limpeza, depois da
+    # comissão, dão exatamente o objetivo.
+    noites_plano = agosto_com["Noites necessárias"]
+    recebido = (
+        noites_plano * agosto_com["Preço mínimo (€)"] + (noites_plano / estadia) * 50
+    ) * (1 - 0.155)
+    assert recebido == pytest.approx(agosto_com["Objetivo (€)"], abs=0.01)
