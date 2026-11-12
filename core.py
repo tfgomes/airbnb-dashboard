@@ -653,7 +653,7 @@ def reconciliacao(reservas, ano, taxa_turistica, reembolsos_manuais):
 def plano_precos(
     base, anterior, reservado, ano_plano, hoje,
     crescimento=0.10, comissao=0.155, desconto=0.10, ocupacoes=None,
-    numero_alojamentos=1,
+    numero_alojamentos=1, taxa_limpeza=0.0,
 ):
     """Plano mensal de preços para `ano_plano`.
 
@@ -666,6 +666,9 @@ def plano_precos(
     desconto     desconto médio que conta dar (semanal, última hora, etc.)
     ocupacoes    {mês: ocupação esperada em %} para substituir a histórica
     numero_alojamentos  quantos alojamentos o resumo `base` agrega
+    taxa_limpeza  taxa de limpeza cobrada por reserva, à parte do preço por
+                  noite. Parte do objetivo vem dela, por isso o preço por
+                  noite a publicar desce taxa ÷ estadia média.
 
     Devolve por mês: a referência, o objetivo, o líquido por noite necessário,
     o preço mínimo (depois de descontos) e o preço de tabela a publicar.
@@ -716,10 +719,23 @@ def plano_precos(
             ocupacao = ocupacao_ref
         ocupacao = min(100.0, float(ocupacao)) if ocupacao else None
 
+        # Quanto da taxa de limpeza cabe a cada noite: uma reserva paga a
+        # taxa uma vez e fica, em média, `estadia` noites.
+        reservas_ref = float(referencia["Reservas"])
+        estadia = (
+            float(referencia["Soma durações"]) / reservas_ref
+            if reservas_ref else None
+        )
+        limpeza_noite = (
+            float(taxa_limpeza) / estadia if taxa_limpeza and estadia else 0.0
+        )
+
         if objetivo and ocupacao and dias_plano:
             noites_plano = dias_plano * ocupacao / 100
             liquido_noite = objetivo / noites_plano
-            preco_minimo = liquido_noite / (1 - comissao)
+            # O que o hóspede tem de pagar por noite no total (noite + parte
+            # da limpeza), menos a parte que já vem da taxa de limpeza.
+            preco_minimo = max(0.0, liquido_noite / (1 - comissao) - limpeza_noite)
             preco_tabela = preco_minimo / (1 - desconto)
         else:
             noites_plano = None
@@ -749,6 +765,8 @@ def plano_precos(
             "Noites necessárias": noites_plano,
             "Líquido/noite necessário (€)": liquido_noite,
             "Variação do preço (%)": variacao(liquido_noite, media_ref),
+            "Estadia média referência": estadia,
+            "Limpeza por noite (€)": limpeza_noite if preco_minimo is not None else None,
             "Preço mínimo (€)": preco_minimo,
             "Preço de tabela (€)": preco_tabela,
             "Já reservado (€)": ja_reservado,

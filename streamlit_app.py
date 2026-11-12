@@ -45,6 +45,12 @@ HOJE = pd.Timestamp(datetime.now(ZoneInfo("Europe/Lisbon")).date())
 PROPRIETARIOS = ["Tiago", "Guilhermino"]
 PASTA_FOTOS = Path(__file__).parent / "assets"
 
+# Taxa de limpeza cobrada por reserva, por anúncio (valor inicial do campo
+# no plano de preços; os que não estão aqui começam em 0).
+TAXAS_LIMPEZA = {
+    "Apartamento Moderno c/Piscina, a 12 min da Praia": 50.0,
+}
+
 # Nome curto e proprietário sugeridos para os anúncios conhecidos. Valem
 # enquanto não houver outra escolha guardada no separador Dados.
 SUGESTOES = {
@@ -306,6 +312,7 @@ def tabela_html(cabecalhos, linhas, total=None, apagadas=()):
     """
     def celulas(linha):
         partes = []
+        linha = [celula for celula in linha if celula is not None]
         for posicao, celula in enumerate(linha):
             estilo = ""
             if isinstance(celula, tuple):
@@ -317,7 +324,9 @@ def tabela_html(cabecalhos, linhas, total=None, apagadas=()):
 
     topo = "".join(
         f'<th{" class=esq" if posicao == 0 else ""}>{h(titulo)}</th>'
-        for posicao, titulo in enumerate(cabecalhos)
+        for posicao, titulo in enumerate(
+            [titulo for titulo in cabecalhos if titulo is not None]
+        )
     )
     corpo = "".join(
         f'<tr{" class=apagada" if indice in apagadas else ""}>{celulas(linha)}</tr>'
@@ -1902,6 +1911,22 @@ with aba_precos:
     ano_plano = int(ano_plano)
     ano_referencia = ano_plano - 1
 
+    if alojamento_unico:
+        coluna_limpeza, _ = st.columns([1, 3])
+        with coluna_limpeza:
+            taxa_limpeza = st.number_input(
+                "Taxa de limpeza por reserva (€)", min_value=0.0, step=5.0,
+                value=TAXAS_LIMPEZA.get(alojamento_unico, 0.0),
+                key=f"taxa_limpeza_{alojamento_unico}",
+                help=(
+                    "O que cobras de limpeza em cada reserva, à parte do "
+                    "preço por noite. O preço por noite a publicar desce o "
+                    "equivalente a esta taxa dividida pela estadia média."
+                ),
+            )
+    else:
+        taxa_limpeza = 0.0
+
     def plano_de(listing, ocupacoes=None):
         return core.plano_precos(
             mensal_de(listing, ano_referencia),
@@ -1913,6 +1938,10 @@ with aba_precos:
             comissao=comissao_pct / 100,
             desconto=desconto_pct / 100,
             ocupacoes=ocupacoes,
+            taxa_limpeza=(
+                taxa_limpeza if listing == alojamento_unico
+                else TAXAS_LIMPEZA.get(listing, 0.0)
+            ),
         )
 
     ocupacoes_editadas = None
@@ -2065,6 +2094,8 @@ with aba_precos:
                 h(percentagem(linha["Ocupação esperada (%)"], 0)),
                 f'<span class="ad-forte">{c_euros(linha["Líquido/noite necessário (€)"])}</span>',
                 c_variacao(linha["Variação do preço (%)"]),
+                c_euros(linha["Limpeza por noite (€)"], 0, zero_vazio=False)
+                if taxa_limpeza > 0 else None,
                 c_euros(linha["Preço mínimo (€)"], 0),
                 c_calor(linha["Preço de tabela (€)"], maximo_tabela, 0),
                 c_barra(linha["Objetivo atingido (%)"], rosa=True)
@@ -2075,12 +2106,14 @@ with aba_precos:
             [
                 "Mês", "Referência", "Média ref.", "Melhor noite ref.",
                 "Objetivo", "Ocupação", "Líquido necessário",
-                "Subida", "Preço mínimo", "Preço de tabela", "Já reservado",
+                "Subida", "Limpeza/noite" if taxa_limpeza > 0 else None,
+                "Preço mínimo", "Preço de tabela", "Já reservado",
             ],
             linhas_plano,
             total=[
                 "Total", "", "", "",
-                c_euros(objetivo_total, 0), "", "", "", "", "",
+                c_euros(objetivo_total, 0), "", "", "",
+                "" if taxa_limpeza > 0 else None, "", "",
                 c_barra(atingido, rosa=True),
             ],
             apagadas={
@@ -2097,6 +2130,12 @@ with aba_precos:
             f"Preço de tabela = preço a publicar para que, com {desconto_pct} % "
             "de desconto, ainda fiques no preço mínimo. "
             "A taxa turística não está incluída em nenhum destes preços."
+            + (
+                f" Os preços são por noite e já descontam a taxa de limpeza de "
+                f"{euros(taxa_limpeza)} por reserva (cada noite recebe a taxa "
+                "÷ estadia média do mês de referência)."
+                if taxa_limpeza > 0 else ""
+            )
         )
 
         seccao(
