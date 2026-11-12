@@ -391,3 +391,25 @@ def test_alojamento_sem_noites_no_ano_nao_conta_para_a_ocupacao(reservas, noites
     juntos = core.resumo_anual(core.agregar_mensal([ativo, parado]), 2026, HOJE)
     sozinho = core.resumo_anual(ativo, 2026, HOJE)
     assert juntos["ocupacao"] == pytest.approx(sozinho["ocupacao"])
+
+
+def test_outros_rendimentos_aircover(reservas, noites):
+    # 184,50 € pagos pelo AirCover em janeiro de 2026, fora das reservas.
+    ajustes_mes = {1: {"valor": 0.0, "outros": 184.50, "notes": "AirCover"}}
+    mensal, _ = core.resumo_mensal(reservas, noites, 2026, ajustes(), HOJE, ajustes_mes)
+    janeiro = mensal.iloc[0]
+    assert janeiro["Outros rendimentos (€)"] == 184.50
+    assert janeiro["Total do mês (€)"] == pytest.approx(janeiro["Total líquido (€)"] + 184.50)
+    # Não mexe na média por noite nem no rendimento das estadias.
+    anual = core.resumo_anual(mensal, 2026, HOJE)
+    assert anual["liquido"] == pytest.approx(30909.75, abs=0.005)
+    assert anual["outros"] == 184.50
+    assert anual["total"] == pytest.approx(30909.75 + 308.70 + 184.50, abs=0.005)
+
+    # Com este valor, o total fica igual ao que o Airbnb mostra para 2026.
+    rec = core.reconciliacao(reservas, 2026, 950.0, 0.0, 184.50)
+    assert rec["total_csv"] + rec["outros_rendimentos"] == pytest.approx(32352.95, abs=0.005)
+    assert sum(core.pagamentos_mensais(reservas, 2026)) + 184.50 == pytest.approx(32352.95, abs=0.005)
+
+    total = core.agregar_mensal([mensal, mensal])
+    assert total["Outros rendimentos (€)"].sum() == 369.0

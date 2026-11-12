@@ -428,7 +428,8 @@ def resumo_mensal(
     reservas   todas as reservas do alojamento (inclui canceladas)
     noites     noites das reservas não canceladas (`criar_noites`)
     ajustes    {mês: {"valor": taxa turística manual, "notes": ...}}
-    reembolsos {mês: {"valor": reembolso manual, "notes": ...}}
+    reembolsos {mês: {"valor": reembolso manual, "outros": outros
+               rendimentos (ex.: AirCover), "notes": ...}}
     """
     reembolsos = reembolsos or {}
     ano = int(ano)
@@ -481,6 +482,8 @@ def resumo_mensal(
             cancelamentos = 0.0
 
         reembolso = float(reembolsos.get(mes, {}).get("valor", 0.0) or 0.0)
+        # Pagamentos do Airbnb fora das reservas (por exemplo AirCover).
+        outros = float(reembolsos.get(mes, {}).get("outros", 0.0) or 0.0)
 
         linhas.append({
             "Mês nº": mes,
@@ -495,7 +498,8 @@ def resumo_mensal(
             "Total líquido (€)": valor_liquido,
             "Cancelamentos retidos (€)": cancelamentos,
             "Reembolsos (€)": reembolso,
-            "Total do mês (€)": valor_liquido + cancelamentos - reembolso,
+            "Outros rendimentos (€)": outros,
+            "Total do mês (€)": valor_liquido + cancelamentos - reembolso + outros,
             "Reservas": periodo["Reserva"].nunique(),
             "Noites": noites_mes,
             "Noites realizadas": len(realizadas),
@@ -518,8 +522,8 @@ def resumo_mensal(
 COLUNAS_SOMA = [
     "Earnings bruto (€)", "Taxa automática (€)", "Taxa utilizada (€)",
     "Realizado líquido (€)", "Futuro líquido (€)", "Total líquido (€)",
-    "Cancelamentos retidos (€)", "Reembolsos (€)", "Total do mês (€)",
-    "Reservas", "Noites", "Noites realizadas", "Dias disponíveis",
+    "Cancelamentos retidos (€)", "Reembolsos (€)", "Outros rendimentos (€)",
+    "Total do mês (€)", "Reservas", "Noites", "Noites realizadas", "Dias disponíveis",
     "Soma durações",
 ]
 
@@ -613,6 +617,7 @@ def resumo_anual(mensal, ano, hoje):
         "liquido": liquido,
         "cancelamentos": float(mensal["Cancelamentos retidos (€)"].sum()),
         "reembolsos": float(mensal["Reembolsos (€)"].sum()),
+        "outros": float(mensal["Outros rendimentos (€)"].sum()),
         "total": float(mensal["Total do mês (€)"].sum()),
         "taxa": float(mensal["Taxa utilizada (€)"].sum()),
         "noites": noites,
@@ -627,7 +632,9 @@ def resumo_anual(mensal, ano, hoje):
 # RECONCILIAÇÃO
 # =========================================================
 
-def reconciliacao(reservas, ano, taxa_turistica, reembolsos_manuais):
+def reconciliacao(
+    reservas, ano, taxa_turistica, reembolsos_manuais, outros_rendimentos=0.0,
+):
     """Componentes financeiros de um alojamento (ano = ano de entrada)."""
     dados_ano = reservas[reservas["Entrada"].dt.year == int(ano)]
     valor = dados_ano["Valor bruto"]
@@ -645,8 +652,12 @@ def reconciliacao(reservas, ano, taxa_turistica, reembolsos_manuais):
         "cancelamentos_positivos": float(valor[cancelada & (valor > 0)].sum()),
         "cancelamentos_negativos": float(abs(valor[cancelada & (valor < 0)].sum())),
         "reembolsos_manuais": float(reembolsos_manuais),
+        "outros_rendimentos": float(outros_rendimentos),
         "taxa": float(taxa_turistica),
-        "final": total_csv - float(reembolsos_manuais) - float(taxa_turistica),
+        "final": (
+            total_csv + float(outros_rendimentos)
+            - float(reembolsos_manuais) - float(taxa_turistica)
+        ),
     }
 
 

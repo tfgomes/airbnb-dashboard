@@ -13,6 +13,7 @@ preços de vários alojamentos no Airbnb, por proprietário.
 | `tests/smoke_app.py` | Corre a app inteira com Streamlit/Plotly/Supabase simulados |
 | `supabase/001_alojamentos_e_reembolsos.sql` | Tabelas `properties` e `monthly_adjustments` |
 | `supabase/002_custos_e_roi.sql` | Tabelas `cost_items` e `cost_settings` (custos e ROI) |
+| `supabase/003_outros_rendimentos.sql` | Coluna dos outros rendimentos (ex.: AirCover) nos ajustes mensais |
 | `.github/workflows/supabase-keepalive.yml` | Mantém o Supabase ativo e faz backup diário |
 | `backups/` | Backup em CSV das tabelas (sem dados pessoais) |
 | `assets/` | Foto de cada alojamento; o ficheiro tem o início do nome curto (`t2.jpg`, `t1+1.jpg`, `t0.jpg`, `t1.jpg`) |
