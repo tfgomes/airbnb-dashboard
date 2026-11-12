@@ -217,14 +217,17 @@ assert "30.978,45 €" in texto          # total final: 32.168,45 − 240 − 95
 
 # 3. Guardar (botões carregados): escreve nas tabelas certas.
 for botao, tabela in [
-    ("Guardar reembolsos", "monthly_adjustments"),
+    ("Guardar reembolsos e outros rendimentos", "monthly_adjustments"),
     ("Guardar ajustes da taxa", "tourist_tax_monthly"),
     ("Guardar alojamentos", "properties"),
 ]:
     _, base = correr(f"botão '{botao}'", {
         "reservations": reservas, "tourist_tax_monthly": taxas,
         "properties": [], "monthly_adjustments": [
-            {"listing": LISTING, "adj_year": 2026, "adj_month": 9, "refund_cents": 24000, "notes": "Matas"},
+            {"listing": LISTING, "adj_year": 2026, "adj_month": 9, "refund_cents": 24000,
+             "other_income_cents": 0, "notes": "Matas"},
+            {"listing": LISTING, "adj_year": 2026, "adj_month": 1, "refund_cents": 0,
+             "other_income_cents": 18450, "notes": "AirCover"},
         ],
     }, botoes=[botao])
     assert base.escritas and all(e[0] == tabela for e in base.escritas), base.escritas
@@ -232,8 +235,35 @@ for botao, tabela in [
         gravados = {e[2]["tax_month"]: e[2]["manual_tax_cents"] for e in base.escritas if e[1] == "upsert"}
         assert gravados == {4: 4400, 5: 13400, 6: 15800, 7: 8400, 8: 24000, 9: 12600}, gravados
     if tabela == "monthly_adjustments":
-        gravados = [e[2] for e in base.escritas if e[1] == "upsert"]
-        assert len(gravados) == 1 and gravados[0]["refund_cents"] == 24000
+        gravados = {e[2]["adj_month"]: e[2] for e in base.escritas if e[1] == "upsert"}
+        assert set(gravados) == {1, 9}
+        assert gravados[9]["refund_cents"] == 24000 and gravados[9]["other_income_cents"] == 0
+        assert gravados[1]["refund_cents"] == 0 and gravados[1]["other_income_cents"] == 18450
+
+# 3b. AirCover de janeiro: o total passa a bater com o Airbnb (32.352,95 €).
+st, _ = correr("outros rendimentos (AirCover)", {
+    "reservations": reservas, "tourist_tax_monthly": taxas,
+    "properties": [], "monthly_adjustments": [
+        {"listing": LISTING, "adj_year": 2026, "adj_month": 1, "refund_cents": 0,
+         "other_income_cents": 18450, "notes": "AirCover"},
+    ],
+})
+texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
+assert "32.352,95 €" in texto           # coluna "Como no Airbnb", total
+assert "982,40 €" in texto              # janeiro como no Airbnb
+assert "30.909,75 €" in texto           # as estadias não mudam
+legendas = " ".join(a[0] for t, a in st.saida if t == "caption")
+assert "outros rendimentos 184,50 €" in legendas and "31.402,95 €" in legendas
+
+# 3c. Tabela antiga, sem a coluna nova: os reembolsos continuam a funcionar.
+st, base = correr("tabela de ajustes sem a coluna nova", {
+    "reservations": reservas, "tourist_tax_monthly": taxas,
+    "properties": [], "monthly_adjustments": [
+        {"listing": LISTING, "adj_year": 2026, "adj_month": 9, "refund_cents": 24000, "notes": "Matas"},
+    ],
+}, botoes=["Guardar reembolsos e outros rendimentos"])
+gravados = [e[2] for e in base.escritas if e[1] == "upsert"]
+assert len(gravados) == 1 and "other_income_cents" not in gravados[0]
 
 # 4. Quatro alojamentos, dois proprietários.
 nomes = ["Apartamento A", "Apartamento B", "Apartamento C", "Apartamento D"]

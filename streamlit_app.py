@@ -99,10 +99,15 @@ create table if not exists public.monthly_adjustments (
     adj_year integer not null,
     adj_month integer not null check (adj_month between 1 and 12),
     refund_cents bigint not null default 0 check (refund_cents >= 0),
+    other_income_cents bigint not null default 0,
     notes text,
     updated_at timestamptz not null default now(),
     primary key (listing, adj_year, adj_month)
 );
+
+-- Para quem criou a tabela antes de existir esta coluna.
+alter table public.monthly_adjustments
+    add column if not exists other_income_cents bigint not null default 0;
 
 alter table public.properties enable row level security;
 alter table public.monthly_adjustments enable row level security;
@@ -610,14 +615,20 @@ def guardar_ajustes_taxa(listing, ano, editor):
             )
 
 
-def guardar_reembolsos(listing, ano, editor):
+def guardar_reembolsos(listing, ano, editor, com_outros):
     agora = agora_iso()
+
+    def valor_positivo(valor):
+        return 0.0 if pd.isna(valor) or float(valor) <= 0 else float(valor)
 
     for indice, linha in editor.reset_index(drop=True).iterrows():
         mes = indice + 1
-        valor = linha["Reembolso (€)"]
+        reembolso = valor_positivo(linha["Reembolso (€)"])
+        outros = (
+            valor_positivo(linha["Outros rendimentos (€)"]) if com_outros else 0.0
+        )
 
-        if pd.isna(valor) or float(valor) <= 0:
+        if reembolso == 0 and outros == 0:
             (
                 supabase.table("monthly_adjustments")
                 .delete()
@@ -626,23 +637,25 @@ def guardar_reembolsos(listing, ano, editor):
                 .eq("adj_month", mes)
                 .execute()
             )
-        else:
-            notas = linha.get("Notas", "")
-            (
-                supabase.table("monthly_adjustments")
-                .upsert(
-                    {
-                        "listing": listing,
-                        "adj_year": int(ano),
-                        "adj_month": mes,
-                        "refund_cents": int(round(float(valor) * 100)),
-                        "notes": "" if pd.isna(notas) else str(notas or ""),
-                        "updated_at": agora,
-                    },
-                    on_conflict="listing,adj_year,adj_month",
-                )
-                .execute()
-            )
+            continue
+
+        notas = linha.get("Notas", "")
+        registo = {
+            "listing": listing,
+            "adj_year": int(ano),
+            "adj_month": mes,
+            "refund_cents": int(round(reembolso * 100)),
+            "notes": "" if pd.isna(notas) else str(notas or ""),
+            "updated_at": agora,
+        }
+        if com_outros:
+            registo["other_income_cents"] = int(round(outros * 100))
+
+        (
+            supabase.table("monthly_adjustments")
+            .upsert(registo, on_conflict="listing,adj_year,adj_month")
+            .execute()
+        )
 
 
 def guardar_propriedades(editor):
@@ -852,8 +865,15 @@ if dados.empty:
     st.stop()
 
 registos_reembolsos = ler_tabela_opcional(
-    "monthly_adjustments", "listing,adj_year,adj_month,refund_cents,notes",
+    "monthly_adjustments",
+    "listing,adj_year,adj_month,refund_cents,other_income_cents,notes",
 )
+# A coluna dos outros rendimentos pode ainda não existir numa tabela antiga.
+tem_outros = registos_reembolsos is not None
+if registos_reembolsos is None:
+    registos_reembolsos = ler_tabela_opcional(
+        "monthly_adjustments", "listing,adj_year,adj_month,refund_cents,notes",
+    )
 registos_propriedades = ler_tabela_opcional(
     "properties", "listing,display_name,owner",
 )
@@ -876,6 +896,11 @@ taxas = indexar_mensal(registos_taxa, "tax_year", "tax_month", "manual_tax_cents
 reembolsos = indexar_mensal(
     registos_reembolsos, "adj_year", "adj_month", "refund_cents",
 )
+for registo in registos_reembolsos or []:
+    chave_registo = (registo["listing"], int(registo["adj_year"]))
+    reembolsos[chave_registo][int(registo["adj_month"])]["outros"] = (
+        int(registo.get("other_income_cents") or 0) / 100
+    )
 
 todos_listings = sorted(dados["Listing"].unique())
 
@@ -958,13 +983,11 @@ if not listings:
 # =========================================================
 
 with st.sidebar:
-    donos_presentes = [
-        dono for dono in PROPRIETARIOS
-        if (propriedades["Proprietário"] == dono).any()
-    ]
-    donos_presentes += sorted(
-        set(propriedades["Proprietário"]) - set(PROPRIETARIOS)
-    )
+    donos_em_uso = {
+        propriedades.loc[listing, "Proprietário"] for listing in listings
+    }
+    donos_presentes = [dono for dono in PROPRIETARIOS if dono in donos_em_uso]
+    donos_presentes += sorted(donos_em_uso - set(PROPRIETARIOS))
 
     if len(listings) > 1 and len(donos_presentes) > 1:
         carteira = st.radio("Carteira", [TODOS] + donos_presentes, horizontal=True)
@@ -1223,9 +1246,10 @@ with aba_desempenho:
         },
     ])
 
-    if anual["cancelamentos"] or anual["reembolsos"]:
+    if anual["cancelamentos"] or anual["reembolsos"] or anual["outros"]:
         st.caption(
             f"Fora das estadias: cancelamentos retidos {euros(anual['cancelamentos'])}, "
+            f"outros rendimentos {euros(anual['outros'])}, "
             f"reembolsos enviados {euros(anual['reembolsos'])}. "
             f"Total do ano com estes movimentos: {euros(anual['total'])}."
         )
@@ -1970,7 +1994,9 @@ with aba_mensal:
 
     # ----- 4. Taxa turística e outros movimentos -----
 
-    with st.expander("Taxa turística, cancelamentos e reembolsos por mês"):
+    with st.expander(
+        "Taxa turística, cancelamentos, outros rendimentos e reembolsos por mês"
+    ):
         linhas_movimentos = [
             [
                 h(MESES[indice]),
@@ -1978,6 +2004,7 @@ with aba_mensal:
                 c_euros(mensal["Taxa utilizada (€)"].iloc[indice]),
                 c_euros(liquido_atual.iloc[indice]),
                 c_euros(mensal["Cancelamentos retidos (€)"].iloc[indice]),
+                c_euros(mensal["Outros rendimentos (€)"].iloc[indice]),
                 c_euros(mensal["Reembolsos (€)"].iloc[indice]),
                 f'<span class="ad-forte">{c_euros(mensal["Total do mês (€)"].iloc[indice])}</span>',
             ]
@@ -1986,7 +2013,8 @@ with aba_mensal:
         tabela_html(
             [
                 "Mês", "Recebido do Airbnb", "Taxa turística", "Estadias líquidas",
-                "Cancelamentos retidos", "Reembolsos", "Total do mês",
+                "Cancelamentos retidos", "Outros rendimentos", "Reembolsos",
+                "Total do mês",
             ],
             linhas_movimentos,
             total=[
@@ -1995,6 +2023,7 @@ with aba_mensal:
                 c_euros(mensal["Taxa utilizada (€)"].sum()),
                 c_euros(liquido_atual.sum()),
                 c_euros(mensal["Cancelamentos retidos (€)"].sum()),
+                c_euros(mensal["Outros rendimentos (€)"].sum()),
                 c_euros(mensal["Reembolsos (€)"].sum()),
                 c_euros(mensal["Total do mês (€)"].sum()),
             ],
@@ -2002,7 +2031,8 @@ with aba_mensal:
         )
         st.caption(
             "Estadias líquidas = recebido do Airbnb − taxa turística. "
-            "Total do mês = estadias líquidas + cancelamentos retidos − reembolsos."
+            "Total do mês = estadias líquidas + cancelamentos retidos + outros "
+            "rendimentos − reembolsos."
         )
 
     st.download_button(
@@ -2900,6 +2930,56 @@ with aba_reconciliacao:
             ano,
             resumo["Taxa utilizada (€)"].sum(),
             sum(item["valor"] for item in reembolsos.get(chave, {}).values()),
+            sum(item.get("outros", 0.0) for item in reembolsos.get(chave, {}).values()),
+        )
+
+    def comparacao_airbnb(listas):
+        """Tabela mês a mês pela regra do Airbnb, para um ou mais alojamentos."""
+        pagamentos = [0.0] * 12
+        for listing in listas:
+            do_listing = core.pagamentos_mensais(reservas_por_listing[listing], ano)
+            pagamentos = [a + b for a, b in zip(pagamentos, do_listing)]
+        resumo_rec = core.agregar_mensal(
+            [mensal_de(listing, ano) for listing in listas]
+        )
+        outros = resumo_rec["Outros rendimentos (€)"]
+        como_airbnb = [pagamentos[indice] + outros.iloc[indice] for indice in range(12)]
+
+        tabela_html(
+            [
+                "Mês", "Como no Airbnb", "Reservas (CSV)", "Outros rendimentos",
+                "Taxa turística", "Cancelamentos retidos",
+                "Estadias por noite (este painel)",
+            ],
+            [
+                [
+                    h(MESES[indice]),
+                    f'<span class="ad-forte">{c_euros(como_airbnb[indice])}</span>',
+                    c_euros(pagamentos[indice]),
+                    c_euros(outros.iloc[indice]),
+                    c_euros(resumo_rec["Taxa utilizada (€)"].iloc[indice]),
+                    c_euros(resumo_rec["Cancelamentos retidos (€)"].iloc[indice]),
+                    c_euros(resumo_rec["Total líquido (€)"].iloc[indice]),
+                ]
+                for indice in range(12)
+            ],
+            total=[
+                "Total",
+                c_euros(sum(como_airbnb)),
+                c_euros(sum(pagamentos)),
+                c_euros(outros.sum()),
+                c_euros(resumo_rec["Taxa utilizada (€)"].sum()),
+                c_euros(resumo_rec["Cancelamentos retidos (€)"].sum()),
+                c_euros(resumo_rec["Total líquido (€)"].sum()),
+            ],
+        )
+        st.caption(
+            "\"Como no Airbnb\" = reservas pagas no dia a seguir à entrada "
+            "(com taxa turística e cancelamentos) + outros rendimentos. Deve "
+            "bater com a página Rendimentos do Airbnb, mês a mês e no total "
+            "(pago + próximos pagamentos). Se um mês não bater, há um "
+            "pagamento fora das reservas ainda por registar: vê esse mês em "
+            "Pagamentos efetuados e regista-o em \"Outros rendimentos\"."
         )
 
     seccao(
@@ -2921,6 +3001,11 @@ with aba_reconciliacao:
                 ),
             },
             {
+                "rotulo": "Outros rendimentos",
+                "valor": euros(rec["outros_rendimentos"]),
+                "nota": h("pagos pelo Airbnb fora das reservas"),
+            },
+            {
                 "rotulo": "Reembolsos enviados",
                 "valor": euros(rec["reembolsos_manuais"]),
                 "nota": h("ajuste manual por mês"),
@@ -2933,7 +3018,7 @@ with aba_reconciliacao:
             {
                 "rotulo": "Total final líquido",
                 "valor": euros(rec["final"]),
-                "nota": h("CSV − reembolsos − taxa turística"),
+                "nota": h("CSV + outros − reembolsos − taxa turística"),
                 "destaque": True,
             },
         ])
@@ -2945,9 +3030,10 @@ with aba_reconciliacao:
             )
 
         seccao(
-            "Reembolsos enviados aos hóspedes",
-            "Valores que devolveste (por exemplo pelo centro de resoluções do "
-            "Airbnb) e que não aparecem nos CSV de reservas.",
+            "Reembolsos e outros rendimentos",
+            "Movimentos que não aparecem nos CSV de reservas: o que devolveste "
+            "a hóspedes e o que o Airbnb te pagou fora das reservas (por "
+            "exemplo AirCover por danos ou limpezas).",
         )
 
         if tem_reembolsos:
@@ -2958,16 +3044,24 @@ with aba_reconciliacao:
                     "Cancelamentos retidos (€)"
                 ].round(2),
                 "Reembolso (€)": [
-                    guardados.get(mes, {}).get("valor") for mes in range(1, 13)
+                    guardados.get(mes, {}).get("valor") or None
+                    for mes in range(1, 13)
+                ],
+                "Outros rendimentos (€)": [
+                    guardados.get(mes, {}).get("outros") or None
+                    for mes in range(1, 13)
                 ],
                 "Notas": [
                     guardados.get(mes, {}).get("notes", "")
                     for mes in range(1, 13)
                 ],
             })
-            base_reembolsos["Reembolso (€)"] = pd.to_numeric(
-                base_reembolsos["Reembolso (€)"]
-            )
+            for coluna in ["Reembolso (€)", "Outros rendimentos (€)"]:
+                base_reembolsos[coluna] = pd.to_numeric(base_reembolsos[coluna])
+            if not tem_outros:
+                base_reembolsos = base_reembolsos.drop(
+                    columns=["Outros rendimentos (€)"]
+                )
 
             editor_reembolsos = st.data_editor(
                 base_reembolsos,
@@ -2981,14 +3075,42 @@ with aba_reconciliacao:
                     ),
                     "Reembolso (€)": st.column_config.NumberColumn(
                         min_value=0.0, step=1.0, format="%.2f €",
+                        help="O que devolveste a um hóspede.",
+                    ),
+                    **(
+                        {
+                            "Outros rendimentos (€)": st.column_config.NumberColumn(
+                                min_value=0.0, step=1.0, format="%.2f €",
+                                help=(
+                                    "O que o Airbnb te pagou fora das reservas, "
+                                    "por exemplo AirCover por danos."
+                                ),
+                            ),
+                        }
+                        if tem_outros else {}
                     ),
                     "Notas": st.column_config.TextColumn(),
                 },
             )
 
-            if st.button("Guardar reembolsos", type="primary"):
+            if not tem_outros:
+                st.caption(
+                    "Para registar outros rendimentos (por exemplo AirCover) "
+                    "falta uma coluna na tabela. Corre isto no SQL Editor do "
+                    "Supabase e depois carrega em \"Atualizar dados\":"
+                )
+                st.code(
+                    "alter table public.monthly_adjustments\n"
+                    "    add column if not exists other_income_cents "
+                    "bigint not null default 0;",
+                    language="sql",
+                )
+
+            if st.button("Guardar reembolsos e outros rendimentos", type="primary"):
                 try:
-                    guardar_reembolsos(alojamento_unico, ano, editor_reembolsos)
+                    guardar_reembolsos(
+                        alojamento_unico, ano, editor_reembolsos, tem_outros,
+                    )
                     limpar_cache()
                     st.rerun()
                 except Exception as erro:
@@ -3002,51 +3124,11 @@ with aba_reconciliacao:
 
         seccao(
             "Comparar com o Airbnb, mês a mês",
-            "A primeira coluna segue a regra do Airbnb (pagamento inteiro no "
-            "dia a seguir à entrada, com taxa turística e cancelamentos) e "
-            "deve bater com a página Rendimentos do Airbnb.",
+            "A primeira coluna segue a regra do Airbnb e deve bater com a "
+            "página Rendimentos do Airbnb.",
         )
 
-        pagamentos = core.pagamentos_mensais(
-            reservas_por_listing[alojamento_unico], ano,
-        )
-        resumo_rec = mensal_de(alojamento_unico, ano)
-        tabela_html(
-            [
-                "Mês", "Como no Airbnb", "Taxa turística",
-                "Cancelamentos retidos", "Estadias por noite (este painel)",
-                "Diferença",
-            ],
-            [
-                [
-                    h(MESES[indice]),
-                    f'<span class="ad-forte">{c_euros(pagamentos[indice])}</span>',
-                    c_euros(resumo_rec["Taxa utilizada (€)"].iloc[indice]),
-                    c_euros(resumo_rec["Cancelamentos retidos (€)"].iloc[indice]),
-                    c_euros(resumo_rec["Total líquido (€)"].iloc[indice]),
-                    c_diferenca(
-                        resumo_rec["Total líquido (€)"].iloc[indice]
-                        - pagamentos[indice]
-                    ),
-                ]
-                for indice in range(12)
-            ],
-            total=[
-                "Total",
-                c_euros(sum(pagamentos)),
-                c_euros(resumo_rec["Taxa utilizada (€)"].sum()),
-                c_euros(resumo_rec["Cancelamentos retidos (€)"].sum()),
-                c_euros(resumo_rec["Total líquido (€)"].sum()),
-                c_diferenca(resumo_rec["Total líquido (€)"].sum() - sum(pagamentos)),
-            ],
-        )
-        st.caption(
-            "A diferença de cada mês explica-se pela taxa turística, pelos "
-            "cancelamentos e pelas reservas que atravessam dois meses. Se a "
-            "coluna \"Como no Airbnb\" não bater com o Airbnb num mês, há um "
-            "pagamento que não vem nos CSV de reservas (ajuste, resolução ou "
-            "reserva em falta): vê esse mês em Pagamentos efetuados."
-        )
+        comparacao_airbnb([alojamento_unico])
 
         st.markdown("**Total do ano no Airbnb**")
 
@@ -3096,6 +3178,7 @@ with aba_reconciliacao:
                 "Reservas ativas": rec["ativas"],
                 "Cancelamentos": rec["canceladas"],
                 "Total dos CSV": rec["total_csv"],
+                "Outros rendimentos": rec["outros_rendimentos"],
                 "Reembolsos": rec["reembolsos_manuais"],
                 "Taxa turística": rec["taxa"],
                 "Total final líquido": rec["final"],
@@ -3103,14 +3186,20 @@ with aba_reconciliacao:
 
         tabela_rec = pd.DataFrame(linhas_rec)
         colunas_valor = [
-            "Reservas ativas", "Cancelamentos", "Total dos CSV", "Reembolsos",
-            "Taxa turística", "Total final líquido",
+            "Reservas ativas", "Cancelamentos", "Total dos CSV",
+            "Outros rendimentos", "Reembolsos", "Taxa turística",
+            "Total final líquido",
         ]
 
         cartoes([
             {
                 "rotulo": "Total dos CSV",
                 "valor": euros(tabela_rec["Total dos CSV"].sum()),
+                "nota": "",
+            },
+            {
+                "rotulo": "Outros rendimentos",
+                "valor": euros(tabela_rec["Outros rendimentos"].sum()),
                 "nota": "",
             },
             {
@@ -3143,9 +3232,16 @@ with aba_reconciliacao:
                 c_euros(tabela_rec[coluna].sum()) for coluna in colunas_valor
             ],
         )
+        seccao(
+            "Comparar com o Airbnb, mês a mês",
+            "Soma dos alojamentos selecionados, pela regra do Airbnb. Compara "
+            "com a página Rendimentos da conta que tem estes alojamentos.",
+        )
+        comparacao_airbnb(selecionados)
+
         st.info(
             "Escolhe um alojamento na barra lateral para registar reembolsos "
-            "ou comparar com o total do Airbnb."
+            "e outros rendimentos."
         )
 
 
@@ -3344,6 +3440,10 @@ with aba_dados:
         nome for nome, existe in [
             ("properties", tem_propriedades),
             ("monthly_adjustments", tem_reembolsos),
+            (
+                "coluna other_income_cents em monthly_adjustments",
+                tem_outros or not tem_reembolsos,
+            ),
             ("cost_items e cost_settings", tem_custos),
         ] if not existe
     ]
@@ -3392,7 +3492,8 @@ with aba_dados:
 - Cada reserva é identificada por anúncio + código de confirmação.
 - O valor de uma reserva é repartido de forma igual pelas suas noites; cada noite conta no mês em que acontece. O dia de saída não conta.
 - Os indicadores usam apenas reservas não canceladas e excluem a taxa turística.
-- Os cancelamentos que ficaram com valor e os reembolsos enviados aparecem à parte, no total do mês e na reconciliação.
+- Os cancelamentos que ficaram com valor, os outros rendimentos (por exemplo AirCover) e os reembolsos enviados aparecem à parte, no total do mês e na reconciliação.
+- A coluna "Como no Airbnb" da reconciliação soma cada reserva inteira no dia a seguir à entrada, com taxa turística, como faz a página Rendimentos do Airbnb.
 - A ocupação divide as noites ocupadas pelos dias em que o alojamento já estava à venda (desde a primeira noite reservada).
 - Antes de 2026 a taxa turística considerada é 0 €. O ajuste manual de um mês substitui o cálculo automático.
 - A comissão do Airbnb (15,5 % por omissão) está incluída no preço publicado: o preço mínimo do plano é o líquido necessário ÷ 84,5 %.
