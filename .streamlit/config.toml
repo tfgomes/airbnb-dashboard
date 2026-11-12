@@ -3,3 +3,6 @@ primaryColor = "#E61E4D"
 backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F7F7F7"
 textColor = "#222222"
+# Cabeçalho das tabelas editáveis: azul claro, porque o texto do cabeçalho
+# usa sempre a cor do texto normal (um azul-escuro ficaria ilegível).
+dataframeHeaderBackgroundColor = "#D4E2F4"

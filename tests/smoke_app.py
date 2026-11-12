@@ -300,7 +300,12 @@ tabelas4 = {
     "reservations": quatro, "tourist_tax_monthly": quatro_taxas,
     "properties": props, "monthly_adjustments": [],
 }
-st, _ = correr("quatro alojamentos, todos", tabelas4)
+# A carteira que abre por omissão é a do Tiago; "Todos" escolhe-se à mão.
+st, _ = correr("quatro alojamentos, por omissão", tabelas4)
+texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
+assert "Alojamentos de Tiago" in texto or "T1+1 - Almeida Garrett" in texto
+
+st, _ = correr("quatro alojamentos, todos", tabelas4, escolhas={"Carteira": "Todos"})
 texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
 assert "Todos os alojamentos" in texto and "123.639,00 €" in texto   # 4 × 30.909,75
 assert "Rendimento por proprietário" in texto
