@@ -114,6 +114,10 @@ class FalsaFigura:
         )
         self.tracos.append(k)
     def add_bar(self, **k): self._traco(**k)
+    def add_pie(self, **k):
+        assert len(list(k["labels"])) == len(list(k["values"])) > 0
+        self.tracos.append(k)
+    def add_annotation(self, **k): pass
     def add_scatter(self, **k): self._traco(**k)
     def update_layout(self, **k): return self
     def update_xaxes(self, **k): return self
@@ -309,6 +313,15 @@ st, _ = correr("quatro alojamentos, todos", tabelas4, escolhas={"Carteira": "Tod
 texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
 assert "Todos os alojamentos" in texto and "123.639,00 €" in texto   # 4 × 30.909,75
 assert "Rendimento por proprietário" in texto
+circulos = [a[0] for t, a in st.saida if t == "grafico" and any("labels" in tr for tr in a[0].tracos)]
+assert len(circulos) == 1 and len(circulos[0].tracos[0]["labels"]) == 4
+
+# A página "Todos os apartamentos" mostra os quatro mesmo na carteira do Tiago.
+st, _ = correr("página de todos, carteira Tiago", tabelas4,
+               escolhas={"Período": "Ano inteiro, com as reservas futuras"})
+circulos = [a[0] for t, a in st.saida if t == "grafico" and any("labels" in tr for tr in a[0].tracos)]
+assert len(circulos[0].tracos[0]["labels"]) == 4
+assert abs(sum(circulos[0].tracos[0]["values"]) - 4 * 30909.75) < 0.01
 
 st, _ = correr("carteira Guilhermino", tabelas4, escolhas={"Carteira": "Guilhermino"})
 texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
