@@ -152,11 +152,14 @@ Importação de CSV
 
 ## 7. Separadores da app
 
-1. Resumo anual: indicadores, progresso face ao ano anterior com a linha do
+1. Resumo anual: no topo, a passagem do total do Airbnb ao líquido (total
+   no Airbnb com o já pago e os próximos pagamentos; menos taxa turística e
+   reembolsos; compensações e cancelamentos já incluídos; líquido antes de
+   custos). Depois os indicadores, progresso face ao ano anterior com a linha do
    objetivo (mês a mês por omissão, com um interruptor para ver acumulado),
    evolução por ano (com o número de alojamentos ativos em cada ano),
    rendimento por alojamento e proprietário.
-2. Todos os apartamentos: aparece sempre com os quatro, seja qual for a
+2. Todos os apartamentos (penúltimo separador, antes de Dados): aparece sempre com os quatro, seja qual for a
    carteira. Gráfico circular com o valor e a percentagem de cada um (até
    hoje ou ano inteiro com reservas futuras), tabela comparativa, rendimento
    e ocupação mês a mês por apartamento.

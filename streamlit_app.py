@@ -180,6 +180,16 @@ section[data-testid="stSidebar"] { background: #FAFAFA; border-right: 1px solid 
 .ad-grelha { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin: 0.6rem 0 0.4rem 0; }
 .ad-cartao { background: #FFFFFF; border: 1px solid #EBEBEB; border-radius: 18px; padding: 18px 20px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
 .ad-cartao.destaque { background: linear-gradient(135deg, #E61E4D 0%, #D70466 60%, #92174D 100%); border: none; }
+.ad-resumo { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin: 0.6rem 0 0.2rem 0; }
+.ad-resumo .ad-cartao.grande { display: flex; flex-direction: column; justify-content: center; padding: 22px 24px; }
+.ad-resumo .ad-cartao.grande .ad-valor { font-size: 1.95rem; }
+.ad-pilha { display: flex; flex-direction: column; gap: 14px; }
+.ad-pilha .ad-cartao { flex: 1 1 auto; padding: 12px 18px; }
+.ad-pilha .ad-valor { font-size: 1.2rem; }
+.ad-pilha .ad-nota { margin-top: 2px; }
+.ad-cartao.azul { background: linear-gradient(135deg, #1F3A5F 0%, #2C5282 100%); border: none; }
+.ad-cartao.azul .ad-rotulo, .ad-cartao.azul .ad-nota { color: rgba(255,255,255,0.85); }
+.ad-cartao.azul .ad-valor { color: #FFFFFF; }
 .ad-cartao.destaque .ad-rotulo, .ad-cartao.destaque .ad-nota { color: rgba(255,255,255,0.85); }
 .ad-cartao.destaque .ad-valor { color: #FFFFFF; }
 .ad-cartao.destaque .ad-sobe, .ad-cartao.destaque .ad-desce { color: #FFFFFF; }
@@ -1392,23 +1402,23 @@ if tem_propriedades and por_configurar and len(listings) > 1:
 
 (
     aba_desempenho,
-    aba_todos,
     aba_calendario,
     aba_mensal,
     aba_precos,
     aba_custos,
     aba_reconciliacao,
     aba_taxa,
+    aba_todos,
     aba_dados,
 ) = st.tabs([
     "Resumo anual",
-    "Todos os apartamentos",
     "Calendário",
     "Mensal",
     "Plano de preços",
     "Custos e ROI",
     "Reconciliação",
     "Taxa turística",
+    "Todos os apartamentos",
     "Dados",
 ])
 
@@ -1419,30 +1429,99 @@ if tem_propriedades and por_configurar and len(listings) > 1:
 
 with aba_desempenho:
 
-    if crescimento_ano is None:
-        nota_crescimento = h(f"sem meses comparáveis em {ano_anterior}")
-    else:
-        nota_crescimento = nota_variacao(
-            crescimento_ano,
-            f"vs {ano_anterior} ({periodo_comparavel}) · objetivo +10 %",
-        )
-
     duracao = (
         mensal["Soma durações"].sum() / anual["reservas"]
         if anual["reservas"] else None
     )
 
+    # ----- Do total do Airbnb ao líquido -----
+
+    pago_airbnb = 0.0
+    por_pagar_airbnb = 0.0
+    for listing in selecionados:
+        pago_listing, por_pagar_listing = core.pagamentos_estado(
+            reservas_por_listing[listing], ano, HOJE,
+        )
+        pago_airbnb += pago_listing
+        por_pagar_airbnb += por_pagar_listing
+    # As compensações (AirCover e semelhantes) já foram pagas pelo Airbnb.
+    pago_airbnb += anual["outros"]
+    bruto_airbnb = pago_airbnb + por_pagar_airbnb
+    liquido_airbnb = bruto_airbnb - anual["taxa"] - anual["reembolsos"]
+
+    def cartao_html(rotulo, valor, nota, classe=""):
+        return (
+            f'<div class="ad-cartao {classe}">'
+            f'<div class="ad-rotulo">{h(rotulo)}</div>'
+            f'<div class="ad-valor">{h(valor)}</div>'
+            f'<div class="ad-nota">{nota}</div></div>'
+        )
+
+    st.markdown(
+        '<div class="ad-resumo">'
+        + cartao_html(
+            f"Total no Airbnb em {ano}",
+            euros(bruto_airbnb),
+            f"Já pago: <b>{h(euros(pago_airbnb))}</b><br>"
+            f"Próximos pagamentos: <b>{h(euros(por_pagar_airbnb))}</b>",
+            "destaque grande",
+        )
+        + '<div class="ad-pilha">'
+        + cartao_html(
+            "− Taxa turística", euros(anual["taxa"]),
+            h("cobrada aos hóspedes, a entregar ao município"),
+        )
+        + cartao_html(
+            "− Reembolsos a hóspedes", euros(anual["reembolsos"]),
+            h("o que devolveste"),
+        )
+        + "</div>"
+        + '<div class="ad-pilha">'
+        + cartao_html(
+            "Compensações do Airbnb", euros(anual["outros"]),
+            h("AirCover e semelhantes · já incluídas no total"),
+        )
+        + cartao_html(
+            "Cancelamentos retidos", euros(anual["cancelamentos"]),
+            h("já incluídos no total"),
+        )
+        + "</div>"
+        + cartao_html(
+            f"Líquido de {ano}",
+            euros(liquido_airbnb),
+            h("total − taxa turística − reembolsos") + "<br>"
+            + h("antes dos custos do alojamento"),
+            "azul grande",
+        )
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "O total segue a regra do Airbnb (cada reserva conta no dia a seguir "
+        "à entrada) e deve bater com a página Rendimentos. Se não bater, "
+        "falta registar um reembolso ou uma compensação no separador "
+        "Reconciliação."
+    )
+
+    # ----- Outros indicadores -----
+
     cartoes([
         {
-            "rotulo": f"Rendimento líquido {ano}",
-            "valor": euros(anual["liquido"]),
-            "nota": nota_crescimento,
-            "destaque": True,
+            "rotulo": f"Face a {ano_anterior}",
+            "valor": texto_variacao(crescimento_ano),
+            "nota": h(
+                f"meses comparáveis ({periodo_comparavel}) · objetivo +10 %"
+                if crescimento_ano is not None
+                else f"sem meses comparáveis em {ano_anterior}"
+            ),
         },
         {
-            "rotulo": "Já realizado",
-            "valor": euros(anual["realizado"]),
-            "nota": h(f"Reservas futuras: {euros(anual['futuro'])}"),
+            "rotulo": "Rendimento das estadias",
+            "valor": euros(anual["liquido"]),
+            "nota": h(
+                f"realizado {euros(anual['realizado'], 0)} · "
+                f"futuro {euros(anual['futuro'], 0)}"
+            ),
         },
         {
             "rotulo": "Noites reservadas",
@@ -1469,14 +1548,6 @@ with aba_desempenho:
             ),
         },
     ])
-
-    if anual["cancelamentos"] or anual["reembolsos"] or anual["outros"]:
-        st.caption(
-            f"Fora das estadias: cancelamentos retidos {euros(anual['cancelamentos'])}, "
-            f"outros rendimentos {euros(anual['outros'])}, "
-            f"reembolsos enviados {euros(anual['reembolsos'])}. "
-            f"Total do ano com estes movimentos: {euros(anual['total'])}."
-        )
 
     # ----- Progresso face ao ano anterior -----
 

@@ -277,8 +277,8 @@ texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
 assert "32.352,95 €" in texto           # coluna "Como no Airbnb", total
 assert "982,40 €" in texto              # janeiro como no Airbnb
 assert "30.909,75 €" in texto           # as estadias não mudam
-legendas = " ".join(a[0] for t, a in st.saida if t == "caption")
-assert "outros rendimentos 184,50 €" in legendas and "31.402,95 €" in legendas
+assert "184,50 €" in texto              # cartão das compensações do Airbnb
+assert "31.402,95 €" in texto           # líquido: 32.352,95 − 950 de taxa turística
 
 # 3c. Tabela antiga, sem a coluna nova: os reembolsos continuam a funcionar.
 st, base = correr("tabela de ajustes sem a coluna nova", {
