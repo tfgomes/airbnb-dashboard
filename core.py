@@ -450,7 +450,11 @@ def resumo_mensal(
     for mes in range(1, 13):
         periodo = ano_noites[ano_noites["Data"].dt.month == mes]
         dias_mes = calendar.monthrange(ano, mes)[1]
-        disponiveis = dias_disponiveis(ano, mes, primeira_noite)
+        # Um alojamento sem uma única noite no ano não conta como estando
+        # à venda nesse ano (por exemplo, um anúncio antigo já desativado).
+        disponiveis = (
+            dias_disponiveis(ano, mes, primeira_noite) if len(ano_noites) else 0
+        )
 
         realizadas = periodo[periodo["Data"] < hoje]
         futuras = periodo[periodo["Data"] >= hoje]
@@ -644,6 +648,21 @@ def reconciliacao(reservas, ano, taxa_turistica, reembolsos_manuais):
         "taxa": float(taxa_turistica),
         "final": total_csv - float(reembolsos_manuais) - float(taxa_turistica),
     }
+
+
+def pagamentos_mensais(reservas, ano):
+    """Valores por mês como o Airbnb os mostra na página de rendimentos.
+
+    O Airbnb paga cada reserva no dia a seguir à entrada e soma tudo (com
+    taxa turística e cancelamentos) no mês desse pagamento.
+    """
+    if not len(reservas):
+        return [0.0] * 12
+    pagamento = reservas["Entrada"] + pd.Timedelta(days=1)
+    do_ano = reservas[pagamento.dt.year == int(ano)]
+    meses = pagamento[pagamento.dt.year == int(ano)].dt.month
+    somas = do_ano.groupby(meses)["Valor bruto"].sum()
+    return [float(somas.get(mes, 0.0)) for mes in range(1, 13)]
 
 
 # =========================================================

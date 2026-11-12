@@ -107,8 +107,9 @@ class FalsaFigura:
     def __init__(self):
         self.tracos = []
     def _traco(self, **k):
-        for eixo in ("x", "y"):
-            assert len(list(k[eixo])) == 12, (eixo, len(list(k[eixo])))
+        assert len(list(k["x"])) == len(list(k["y"])) > 0, (
+            len(list(k["x"])), len(list(k["y"])),
+        )
         self.tracos.append(k)
     def add_bar(self, **k): self._traco(**k)
     def add_scatter(self, **k): self._traco(**k)
@@ -260,6 +261,20 @@ assert "Alojamentos de Guilhermino" in texto and "61.819,50 €" in texto
 correr("Guilhermino, um alojamento", tabelas4, escolhas={"Carteira": "Guilhermino", "Alojamento": "Casa 2"})
 correr("ano 2025", tabelas4, escolhas={"Ano": 2025})
 correr("planear o ano corrente", {"reservations": reservas, "tourist_tax_monthly": taxas}, escolhas={"Ano a planear": 2026})
+
+# 4b. Um anúncio parado ("outro") e um sem estadias não entram nos relatórios.
+parado = [dict(r, listing="outro") for r in reservas if r["start_date"] < "2025-09-01"]
+so_cancelada = [dict(r, listing="Anúncio de teste", status="Canceled by guest", earnings_cents=0)
+                for r in reservas[:1]]
+st, _ = correr("anúncios fora de uso", {
+    "reservations": reservas + parado + so_cancelada, "tourist_tax_monthly": taxas,
+    "properties": [], "monthly_adjustments": [],
+})
+texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
+assert "T1+1 - Almeida Garrett" in texto and "Carteira" not in texto
+assert "30.909,75 €" in texto and "92,1 %" in texto     # ocupação não é diluída
+editor = [a[0] for t, a in st.saida if t == "data_editor" and "Estado" in a[0].columns][0]
+assert sorted(editor["Estado"]) == ["Em uso", "Ignorado", "Sem estadias"]
 
 # 5. Custos e ROI guardados, e gravação.
 tabelas_custos = {

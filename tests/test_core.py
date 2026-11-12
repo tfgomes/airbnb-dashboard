@@ -368,3 +368,26 @@ def test_taxa_de_limpeza_baixa_o_preco_por_noite(reservas, noites):
         noites_plano * agosto_com["Preço mínimo (€)"] + (noites_plano / estadia) * 50
     ) * (1 - 0.155)
     assert recebido == pytest.approx(agosto_com["Objetivo (€)"], abs=0.01)
+
+
+def test_pagamentos_como_no_airbnb(reservas):
+    # Valores da página de rendimentos do Airbnb para 2026.
+    airbnb = {2: 1125.20, 5: 3419.57, 6: 3182.52, 7: 6720.01, 8: 7193.15,
+              9: 3603.48, 10: 2224.95, 11: 907.90}
+    pagamentos = core.pagamentos_mensais(reservas, 2026)
+    for mes, valor in airbnb.items():
+        assert pagamentos[mes - 1] == pytest.approx(valor, abs=0.005), mes
+    assert sum(pagamentos) == pytest.approx(32168.45, abs=0.005)
+
+
+def test_alojamento_sem_noites_no_ano_nao_conta_para_a_ocupacao(reservas, noites):
+    ativo, _ = core.resumo_mensal(reservas, noites, 2026, ajustes(), HOJE)
+    # Um anúncio antigo: só tem reservas em 2025.
+    antigas = reservas[reservas["Entrada"].dt.year == 2025]
+    noites_antigas = core.criar_noites(antigas[~antigas["Cancelada"]])
+    parado, _ = core.resumo_mensal(antigas, noites_antigas, 2026, {}, HOJE)
+    assert parado["Dias disponíveis"].sum() == 0
+
+    juntos = core.resumo_anual(core.agregar_mensal([ativo, parado]), 2026, HOJE)
+    sozinho = core.resumo_anual(ativo, 2026, HOJE)
+    assert juntos["ocupacao"] == pytest.approx(sozinho["ocupacao"])

@@ -43,6 +43,8 @@ st.set_page_config(
 HOJE = pd.Timestamp(datetime.now(ZoneInfo("Europe/Lisbon")).date())
 
 PROPRIETARIOS = ["Tiago", "Guilhermino"]
+# Proprietário especial: o anúncio fica fora de todos os relatórios.
+IGNORAR = "Ignorar"
 PASTA_FOTOS = Path(__file__).parent / "assets"
 
 # Taxa de limpeza cobrada por reserva, por anúncio (valor inicial do campo
@@ -875,7 +877,7 @@ reembolsos = indexar_mensal(
     registos_reembolsos, "adj_year", "adj_month", "refund_cents",
 )
 
-listings = sorted(dados["Listing"].unique())
+todos_listings = sorted(dados["Listing"].unique())
 
 
 def montar_propriedades():
@@ -886,10 +888,12 @@ def montar_propriedades():
     linhas = []
     usados = set()
 
-    for listing in listings:
+    for listing in todos_listings:
         registo = guardadas.get(listing, {})
         nome_sugerido, dono_sugerido = SUGESTOES.get(
-            listing, (listing, PROPRIETARIOS[0]),
+            listing,
+            # Um anúncio chamado "outro" é um anúncio de teste: fica de fora.
+            (listing, IGNORAR if listing.strip().lower() == "outro" else PROPRIETARIOS[0]),
         )
         nome = (registo.get("display_name") or "").strip() or nome_sugerido
         dono = (registo.get("owner") or "").strip() or dono_sugerido
@@ -915,14 +919,38 @@ def montar_propriedades():
 propriedades = montar_propriedades()
 
 reservas_por_listing = {
-    listing: dados[dados["Listing"] == listing].copy() for listing in listings
+    listing: dados[dados["Listing"] == listing].copy()
+    for listing in todos_listings
 }
 noites_por_listing = {
     listing: core.criar_noites(
         reservas_por_listing[listing][~reservas_por_listing[listing]["Cancelada"]]
     )
-    for listing in listings
+    for listing in todos_listings
 }
+
+
+def estado_listing(listing):
+    if propriedades.loc[listing, "Proprietário"] == IGNORAR:
+        return "Ignorado"
+    if not len(noites_por_listing[listing]):
+        return "Sem estadias"
+    return "Em uso"
+
+
+# Só entram nos relatórios os anúncios em uso: os ignorados e os que nunca
+# tiveram uma estadia (anúncios de teste ou desativados) ficam de fora.
+listings = [
+    listing for listing in todos_listings if estado_listing(listing) == "Em uso"
+]
+
+if not listings:
+    painel_importacao()
+    st.info(
+        "Não há alojamentos com estadias para mostrar. Importa reservas na "
+        "barra lateral."
+    )
+    st.stop()
 
 
 # =========================================================
@@ -1127,7 +1155,7 @@ if tem_propriedades and por_configurar and len(listings) > 1:
     aba_taxa,
     aba_dados,
 ) = st.tabs([
-    "Desempenho",
+    "Resumo anual",
     "Calendário",
     "Mensal",
     "Plano de preços",
@@ -1202,50 +1230,118 @@ with aba_desempenho:
             f"Total do ano com estes movimentos: {euros(anual['total'])}."
         )
 
+    # ----- Evolução por ano -----
+
+    anos_evolucao = sorted({
+        int(valor)
+        for listing in selecionados
+        for valor in noites_por_listing[listing]["Data"].dt.year.unique()
+    })
+    resumos_anos = {
+        valor: core.resumo_anual(mensal_selecao(valor), valor, HOJE)
+        for valor in anos_evolucao
+    }
+
     seccao(
-        "Rendimento por mês",
-        "Cada noite conta no mês em que acontece, mesmo que a reserva "
-        "comece ou acabe noutro mês.",
+        "Evolução por ano",
+        "Rendimento líquido de cada ano; a parte clara são reservas futuras "
+        "já confirmadas.",
     )
 
-    figura = go.Figure()
-    figura.add_bar(
-        x=MESES_CURTOS,
-        y=mensal["Realizado líquido (€)"],
+    figura_anos = go.Figure()
+    figura_anos.add_bar(
+        x=[str(valor) for valor in anos_evolucao],
+        y=[resumos_anos[valor]["realizado"] for valor in anos_evolucao],
         name="Realizado",
-        marker_color=COR_PRINCIPAL,
+        marker_color=[
+            COR_PRINCIPAL if valor == ano else COR_ANTERIOR
+            for valor in anos_evolucao
+        ],
         hovertemplate="%{y:,.0f} €<extra>Realizado</extra>",
     )
-    figura.add_bar(
-        x=MESES_CURTOS,
-        y=mensal["Futuro líquido (€)"],
+    figura_anos.add_bar(
+        x=[str(valor) for valor in anos_evolucao],
+        y=[resumos_anos[valor]["futuro"] for valor in anos_evolucao],
         name="Reservas futuras",
         marker_color=COR_FUTURO,
+        text=[
+            etiqueta_euros(resumos_anos[valor]["liquido"]) for valor in anos_evolucao
+        ],
+        textposition="outside",
+        cliponaxis=False,
         hovertemplate="%{y:,.0f} €<extra>Reservas futuras</extra>",
     )
-    figura.add_scatter(
-        x=MESES_CURTOS,
-        y=mensal["Total líquido (€)"],
-        mode="text",
-        text=mensal["Total líquido (€)"].map(etiqueta_euros),
-        textposition="top center",
-        textfont=dict(size=11, color=COR_SUAVE),
-        showlegend=False,
-        hoverinfo="skip",
-        cliponaxis=False,
+    figura_anos.update_layout(barmode="stack", showlegend=False, bargap=0.45)
+    figura_anos.update_xaxes(type="category")
+    mostrar_grafico(estilo_grafico(figura_anos, altura=320))
+
+    linhas_anos = []
+    for posicao, valor in enumerate(anos_evolucao):
+        resumo_ano = resumos_anos[valor]
+        antes_ano = resumos_anos[anos_evolucao[posicao - 1]] if posicao else None
+        linhas_anos.append([
+            h(valor),
+            f'<span class="ad-forte">{c_euros(resumo_ano["liquido"])}</span>',
+            # Um ano que ainda não começou não se compara nem tem ocupação.
+            c_diferenca(resumo_ano["liquido"] - antes_ano["liquido"])
+            if antes_ano and valor <= HOJE.year else "—",
+            h(inteiro(resumo_ano["noites"])),
+            c_barra(resumo_ano["ocupacao"]) if valor <= HOJE.year else "—",
+            c_euros(resumo_ano["media_noite"]),
+            c_euros(resumo_ano["taxa"]),
+        ])
+    tabela_html(
+        [
+            "Ano", "Rendimento líquido", "Face ao ano anterior", "Noites",
+            "Ocupação", "Média por noite", "Taxa turística",
+        ],
+        linhas_anos,
     )
+    st.caption(
+        "Estes valores são diferentes dos do Airbnb por três razões: aqui não "
+        "entra a taxa turística, cada noite conta no mês em que acontece (o "
+        "Airbnb conta o pagamento inteiro no dia a seguir à entrada) e os "
+        "cancelamentos aparecem à parte. A comparação direta com o Airbnb, "
+        "mês a mês, está no separador Reconciliação."
+    )
+
+    # ----- Progresso face ao ano anterior -----
+
     if mensal_anterior["Total líquido (€)"].sum() > 0:
-        figura.add_scatter(
-            x=MESES_CURTOS,
-            y=mensal_anterior["Total líquido (€)"],
+        seccao(
+            f"Progresso de {ano} face a {ano_anterior}",
+            "Rendimento acumulado desde janeiro. A linha tracejada é o "
+            f"objetivo: {ano_anterior} mais 10 %.",
+        )
+
+        acumulado_ano = mensal["Total líquido (€)"].astype(float).cumsum()
+        acumulado_anterior = mensal_anterior["Total líquido (€)"].astype(float).cumsum()
+
+        figura_progresso = go.Figure()
+        figura_progresso.add_scatter(
+            x=MESES_CURTOS, y=acumulado_anterior * 1.10,
+            name=f"Objetivo ({ano_anterior} + 10 %)",
+            mode="lines",
+            line=dict(color=COR_SUAVE, width=1.5, dash="dash"),
+            hovertemplate="%{y:,.0f} €<extra>Objetivo</extra>",
+        )
+        figura_progresso.add_scatter(
+            x=MESES_CURTOS, y=acumulado_anterior,
             name=str(ano_anterior),
             mode="lines+markers",
-            line=dict(color=COR_ANTERIOR, width=2.5, shape="spline", smoothing=0.6),
-            marker=dict(size=6),
+            line=dict(color=COR_ANTERIOR, width=2.5),
             hovertemplate="%{y:,.0f} €<extra>" + str(ano_anterior) + "</extra>",
         )
-    figura.update_layout(barmode="stack")
-    mostrar_grafico(estilo_grafico(figura, altura=400))
+        figura_progresso.add_scatter(
+            x=MESES_CURTOS, y=acumulado_ano,
+            name=str(ano),
+            mode="lines+markers",
+            line=dict(color=COR_PRINCIPAL, width=3.5),
+            marker=dict(size=8),
+            hovertemplate="%{y:,.0f} €<extra>" + str(ano) + "</extra>",
+        )
+        mostrar_grafico(estilo_grafico(figura_progresso, altura=360))
+
 
     if len(selecionados) > 1:
         seccao("Rendimento por alojamento", f"Rendimento líquido de {ano}.")
@@ -1285,32 +1381,6 @@ with aba_desempenho:
                 ))
             barras_alojamentos(linhas_donos)
 
-    seccao("Ocupação por mês", "Noites ocupadas em cada mês, em percentagem.")
-
-    figura_ocupacao = go.Figure()
-    figura_ocupacao.add_bar(
-        x=MESES_CURTOS,
-        y=mensal["Ocupação (%)"],
-        name=str(ano),
-        marker_color=COR_TEXTO,
-        text=mensal["Ocupação (%)"].map(
-            lambda valor: "" if pd.isna(valor) or valor == 0 else f"{valor:.0f}%"
-        ),
-        textposition="outside",
-        cliponaxis=False,
-        hovertemplate="%{y:.1f} %<extra>" + str(ano) + "</extra>",
-    )
-    if mensal_anterior["Noites"].sum() > 0:
-        figura_ocupacao.add_scatter(
-            x=MESES_CURTOS,
-            y=mensal_anterior["Ocupação (%)"],
-            name=str(ano_anterior),
-            mode="lines+markers",
-            line=dict(color=COR_ANTERIOR, width=2, dash="dot"),
-            hovertemplate="%{y:.1f} %<extra>" + str(ano_anterior) + "</extra>",
-        )
-    figura_ocupacao.update_yaxes(range=[0, 115], ticksuffix=" %")
-    mostrar_grafico(estilo_grafico(figura_ocupacao, altura=300))
 
 
 # =========================================================
@@ -1605,6 +1675,78 @@ with aba_mensal:
         indice for indice in range(12)
         if liquido_atual.iloc[indice] < 0.005 and liquido_antes.iloc[indice] < 0.005
     }
+
+    seccao(
+        f"Rendimento por mês · {ano} e {ano_anterior}",
+        "Barras: este ano (a parte clara são reservas futuras). Linha: o "
+        "mesmo mês do ano anterior. Cada noite conta no mês em que acontece.",
+    )
+
+    figura = go.Figure()
+    figura.add_bar(
+        x=MESES_CURTOS,
+        y=mensal["Realizado líquido (€)"],
+        name="Realizado",
+        marker_color=COR_PRINCIPAL,
+        hovertemplate="%{y:,.0f} €<extra>Realizado</extra>",
+    )
+    figura.add_bar(
+        x=MESES_CURTOS,
+        y=mensal["Futuro líquido (€)"],
+        name="Reservas futuras",
+        marker_color=COR_FUTURO,
+        hovertemplate="%{y:,.0f} €<extra>Reservas futuras</extra>",
+    )
+    figura.add_scatter(
+        x=MESES_CURTOS,
+        y=mensal["Total líquido (€)"],
+        mode="text",
+        text=mensal["Total líquido (€)"].map(etiqueta_euros),
+        textposition="top center",
+        textfont=dict(size=11, color=COR_SUAVE),
+        showlegend=False,
+        hoverinfo="skip",
+        cliponaxis=False,
+    )
+    if mensal_anterior["Total líquido (€)"].sum() > 0:
+        figura.add_scatter(
+            x=MESES_CURTOS,
+            y=mensal_anterior["Total líquido (€)"],
+            name=str(ano_anterior),
+            mode="lines+markers",
+            line=dict(color=COR_ANTERIOR, width=2.5, shape="spline", smoothing=0.6),
+            marker=dict(size=6),
+            hovertemplate="%{y:,.0f} €<extra>" + str(ano_anterior) + "</extra>",
+        )
+    figura.update_layout(barmode="stack")
+    mostrar_grafico(estilo_grafico(figura, altura=400))
+
+    seccao("Ocupação por mês", "Noites ocupadas em cada mês, em percentagem.")
+
+    figura_ocupacao = go.Figure()
+    figura_ocupacao.add_bar(
+        x=MESES_CURTOS,
+        y=mensal["Ocupação (%)"],
+        name=str(ano),
+        marker_color=COR_TEXTO,
+        text=mensal["Ocupação (%)"].map(
+            lambda valor: "" if pd.isna(valor) or valor == 0 else f"{valor:.0f}%"
+        ),
+        textposition="outside",
+        cliponaxis=False,
+        hovertemplate="%{y:.1f} %<extra>" + str(ano) + "</extra>",
+    )
+    if mensal_anterior["Noites"].sum() > 0:
+        figura_ocupacao.add_scatter(
+            x=MESES_CURTOS,
+            y=mensal_anterior["Ocupação (%)"],
+            name=str(ano_anterior),
+            mode="lines+markers",
+            line=dict(color=COR_ANTERIOR, width=2, dash="dot"),
+            hovertemplate="%{y:.1f} %<extra>" + str(ano_anterior) + "</extra>",
+        )
+    figura_ocupacao.update_yaxes(range=[0, 115], ticksuffix=" %")
+    mostrar_grafico(estilo_grafico(figura_ocupacao, altura=300))
 
     # ----- 1. Rendimento e comparação -----
 
@@ -2139,45 +2281,210 @@ with aba_precos:
         )
 
         seccao(
-            "3. O que o hóspede paga com cada desconto",
-            "Preço por noite depois de aplicar o desconto ao preço de tabela. "
-            "Os valores com ⚠ ficam abaixo do preço mínimo.",
+            "3. Estratégia mês a mês",
+            "Escolhe um mês para ver de onde vem o objetivo e que preços publicar.",
         )
 
-        cenarios = core.cenarios_desconto(plano)
-        colunas_desconto = [
-            coluna for coluna in cenarios.columns if coluna.startswith("−")
-        ]
+        coluna_estrategia, _ = st.columns([1, 3])
+        with coluna_estrategia:
+            mes_estrategia = st.selectbox(
+                "Mês do plano", MESES,
+                key=f"mes_estrategia_{alojamento_unico}_{ano_plano}",
+            )
 
-        linhas_cenarios = []
-        for indice in range(12):
-            linha = cenarios.iloc[indice]
-            minimo = linha["Preço mínimo (€)"]
-            celulas_linha = [
-                h(linha["Mês"]),
-                f'<span class="ad-forte">{c_euros(linha["Preço de tabela (€)"], 0)}</span>',
-            ]
-            for coluna in colunas_desconto:
-                valor = linha[coluna]
-                if pd.isna(valor):
-                    celulas_linha.append("—")
-                elif valor < minimo - 0.005:
-                    celulas_linha.append(
-                        f'<span class="ad-menos">{h(euros(valor, 0))} ⚠</span>'
+        indice_mes = MESES.index(mes_estrategia)
+        linha_mes = plano.iloc[indice_mes]
+
+        if pd.isna(linha_mes["Objetivo (€)"]) or pd.isna(linha_mes["Preço mínimo (€)"]):
+            st.info(
+                f"Não há dados de {mes_estrategia.lower()} em anos anteriores "
+                "para servir de referência. Quando houver, o plano aparece aqui."
+            )
+        else:
+            ano_ref_mes = int(str(linha_mes["Referência"])[:4])
+            ref_mes = mensal_de(alojamento_unico, ano_ref_mes).iloc[indice_mes]
+
+            objetivo_mes = float(linha_mes["Objetivo (€)"])
+            rendimento_ref = float(linha_mes["Rendimento referência (€)"])
+            media_ref = float(linha_mes["Líquido/noite referência (€)"])
+            maximo_ref = float(linha_mes["Máximo/noite referência (€)"])
+            ocupacao_ref = float(linha_mes["Ocupação referência (%)"])
+            necessario = float(linha_mes["Líquido/noite necessário (€)"])
+            minimo_mes = float(linha_mes["Preço mínimo (€)"])
+            tabela_mes = float(linha_mes["Preço de tabela (€)"])
+            limpeza_mes = float(linha_mes["Limpeza por noite (€)"] or 0.0)
+            noites_plano_mes = float(linha_mes["Noites necessárias"])
+            reservado_mes = float(linha_mes["Já reservado (€)"])
+            noites_reservadas_mes = float(linha_mes["Noites já reservadas"])
+            livres_ref = float(ref_mes["Dias disponíveis"] - ref_mes["Noites"])
+
+            cartoes([
+                {
+                    "rotulo": f"{mes_estrategia} de {ano_ref_mes} (referência)",
+                    "valor": euros(rendimento_ref),
+                    "nota": h(
+                        f"{inteiro(ref_mes['Noites'])} noites · "
+                        f"{percentagem(ocupacao_ref, 0)} de ocupação · "
+                        f"{euros(media_ref)} por noite"
+                    ),
+                },
+                {
+                    "rotulo": f"Objetivo de {mes_estrategia.lower()} de {ano_plano}",
+                    "valor": euros(objetivo_mes),
+                    "nota": h(f"+{crescimento_pct} % · {euros(necessario)} por noite"),
+                    "destaque": True,
+                },
+                {
+                    "rotulo": "Preço de tabela a publicar",
+                    "valor": euros(tabela_mes, 0),
+                    "nota": h(f"por noite, antes de descontos"),
+                },
+                {
+                    "rotulo": "Preço mínimo",
+                    "valor": euros(minimo_mes, 0),
+                    "nota": h("por noite, depois de descontos"),
+                },
+                {
+                    "rotulo": "Já reservado",
+                    "valor": euros(reservado_mes),
+                    "nota": h(
+                        f"{inteiro(noites_reservadas_mes)} noites · "
+                        f"{percentagem(100 * reservado_mes / objetivo_mes, 0)} do objetivo"
+                    ),
+                },
+            ])
+
+            conselhos = []
+
+            noites_extra = (objetivo_mes - rendimento_ref) / media_ref if media_ref else None
+            if ocupacao_ref >= 95:
+                conselhos.append(
+                    f"**Mês cheio em {ano_ref_mes}** ({percentagem(ocupacao_ref, 0)} "
+                    "de ocupação). Não há mais noites para vender, por isso os "
+                    f"+{crescimento_pct} % têm de vir todos do preço."
+                )
+            elif noites_extra is not None and noites_extra <= livres_ref:
+                conselhos.append(
+                    f"**Há margem na ocupação.** Em {ano_ref_mes} ficaram "
+                    f"{inteiro(livres_ref)} noites por vender. Vender mais "
+                    f"{max(1, round(noites_extra))} noite(s) ao preço médio de "
+                    f"{euros(media_ref)} já dava o objetivo, sem subir preços. "
+                    "Se contas ocupar mais, sobe a ocupação esperada no passo 1 "
+                    "e o preço necessário desce."
+                )
+            else:
+                conselhos.append(
+                    f"**É preciso subir o preço.** Mesmo com o mês cheio ao "
+                    f"preço médio de {ano_ref_mes} não chegavas ao objetivo."
+                )
+
+            if media_ref and maximo_ref >= 1.25 * media_ref:
+                conselhos.append(
+                    f"**Procura desigual ao longo do mês.** A melhor noite rendeu "
+                    f"{euros(maximo_ref)}, {percentagem(100 * (maximo_ref / media_ref - 1), 0)} "
+                    f"acima da média. Usa preços por dia (fins de semana, "
+                    "feriados, eventos) em vez de um preço único."
+                )
+
+            noites_por_vender = noites_plano_mes - noites_reservadas_mes
+            if noites_reservadas_mes > 0 and noites_por_vender > 0.5:
+                falta_por_noite = (objetivo_mes - reservado_mes) / noites_por_vender
+                if falta_por_noite > necessario * 1.02:
+                    final = (
+                        "Isso é mais do que o plano previa: sobe o preço das "
+                        "datas ainda livres."
                     )
+                elif falta_por_noite < necessario * 0.98:
+                    final = "Estás à frente do plano: tens folga para descontos."
                 else:
-                    celulas_linha.append(h(euros(valor, 0)))
-            celulas_linha.append(c_euros(minimo, 0))
-            linhas_cenarios.append(celulas_linha)
+                    final = "Estás em linha com o plano."
+                conselhos.append(
+                    f"**Já reservado:** {euros(reservado_mes)} em "
+                    f"{inteiro(noites_reservadas_mes)} noites "
+                    f"({euros(reservado_mes / noites_reservadas_mes)} por noite). "
+                    f"As {inteiro(noites_por_vender)} noites que faltam têm de "
+                    f"render {euros(falta_por_noite)} cada. {final}"
+                )
+            elif noites_reservadas_mes > 0:
+                conselhos.append(
+                    f"**Já reservado:** {euros(reservado_mes)} em "
+                    f"{inteiro(noites_reservadas_mes)} noites; as noites "
+                    "previstas no plano já estão vendidas."
+                )
 
-        tabela_html(
-            ["Mês", "Preço de tabela"] + colunas_desconto + ["Preço mínimo"],
-            linhas_cenarios,
-            apagadas={
-                indice for indice in range(12)
-                if pd.isna(cenarios["Preço de tabela (€)"].astype(float).iloc[indice])
-            },
-        )
+            conselhos.append(
+                f"**Descontos.** Com o preço de tabela a {euros(tabela_mes, 0)} "
+                f"podes dar até {desconto_pct} % de desconto. Abaixo de "
+                f"{euros(minimo_mes, 0)} por noite o mês deixa de atingir o objetivo."
+            )
+
+            st.markdown("\n".join(f"- {conselho}" for conselho in conselhos))
+
+            linhas_escada = []
+            for desconto in [0, 5, 7, 10, 15, 20]:
+                preco = tabela_mes * (1 - desconto / 100)
+                recebes = (preco + limpeza_mes) * (1 - comissao_pct / 100)
+                linhas_escada.append([
+                    h("Preço de tabela" if desconto == 0 else f"Com −{desconto} %"),
+                    f'<span class="ad-forte">{h(euros(preco, 0))}</span>',
+                    h(euros(recebes)),
+                    c_diferenca(recebes - necessario),
+                    '<span class="ad-pill sobe">atinge o objetivo</span>'
+                    if recebes >= necessario - 0.005
+                    else '<span class="ad-pill desce">abaixo do objetivo</span>',
+                ])
+
+            tabela_html(
+                [
+                    f"{mes_estrategia} de {ano_plano}", "Preço por noite",
+                    "Recebes por noite", "Face ao necessário", "",
+                ],
+                linhas_escada,
+            )
+            st.caption(
+                "Recebes por noite = (preço + parte da taxa de limpeza) menos a "
+                f"comissão de {decimal(comissao_pct)} %."
+            )
+
+        with st.expander("Todos os meses: preço por noite com cada desconto"):
+            st.caption(
+                "Preço por noite depois de aplicar o desconto ao preço de "
+                "tabela. Os valores com ⚠ ficam abaixo do preço mínimo."
+            )
+            cenarios = core.cenarios_desconto(plano)
+            colunas_desconto = [
+                coluna for coluna in cenarios.columns if coluna.startswith("−")
+            ]
+
+            linhas_cenarios = []
+            for indice in range(12):
+                linha = cenarios.iloc[indice]
+                minimo = linha["Preço mínimo (€)"]
+                celulas_linha = [
+                    h(linha["Mês"]),
+                    f'<span class="ad-forte">{c_euros(linha["Preço de tabela (€)"], 0)}</span>',
+                ]
+                for coluna in colunas_desconto:
+                    valor = linha[coluna]
+                    if pd.isna(valor):
+                        celulas_linha.append("—")
+                    elif valor < minimo - 0.005:
+                        celulas_linha.append(
+                            f'<span class="ad-menos">{h(euros(valor, 0))} ⚠</span>'
+                        )
+                    else:
+                        celulas_linha.append(h(euros(valor, 0)))
+                celulas_linha.append(c_euros(minimo, 0))
+                linhas_cenarios.append(celulas_linha)
+
+            tabela_html(
+                ["Mês", "Preço de tabela"] + colunas_desconto + ["Preço mínimo"],
+                linhas_cenarios,
+                apagadas={
+                    indice for indice in range(12)
+                    if pd.isna(cenarios["Preço de tabela (€)"].astype(float).iloc[indice])
+                },
+            )
 
         st.download_button(
             f"Descarregar plano {ano_plano} (CSV)",
@@ -2694,9 +3001,54 @@ with aba_reconciliacao:
             )
 
         seccao(
-            "Comparar com o Airbnb",
-            "Escreve o total que o painel do Airbnb mostra para este ano.",
+            "Comparar com o Airbnb, mês a mês",
+            "A primeira coluna segue a regra do Airbnb (pagamento inteiro no "
+            "dia a seguir à entrada, com taxa turística e cancelamentos) e "
+            "deve bater com a página Rendimentos do Airbnb.",
         )
+
+        pagamentos = core.pagamentos_mensais(
+            reservas_por_listing[alojamento_unico], ano,
+        )
+        resumo_rec = mensal_de(alojamento_unico, ano)
+        tabela_html(
+            [
+                "Mês", "Como no Airbnb", "Taxa turística",
+                "Cancelamentos retidos", "Estadias por noite (este painel)",
+                "Diferença",
+            ],
+            [
+                [
+                    h(MESES[indice]),
+                    f'<span class="ad-forte">{c_euros(pagamentos[indice])}</span>',
+                    c_euros(resumo_rec["Taxa utilizada (€)"].iloc[indice]),
+                    c_euros(resumo_rec["Cancelamentos retidos (€)"].iloc[indice]),
+                    c_euros(resumo_rec["Total líquido (€)"].iloc[indice]),
+                    c_diferenca(
+                        resumo_rec["Total líquido (€)"].iloc[indice]
+                        - pagamentos[indice]
+                    ),
+                ]
+                for indice in range(12)
+            ],
+            total=[
+                "Total",
+                c_euros(sum(pagamentos)),
+                c_euros(resumo_rec["Taxa utilizada (€)"].sum()),
+                c_euros(resumo_rec["Cancelamentos retidos (€)"].sum()),
+                c_euros(resumo_rec["Total líquido (€)"].sum()),
+                c_diferenca(resumo_rec["Total líquido (€)"].sum() - sum(pagamentos)),
+            ],
+        )
+        st.caption(
+            "A diferença de cada mês explica-se pela taxa turística, pelos "
+            "cancelamentos e pelas reservas que atravessam dois meses. Se a "
+            "coluna \"Como no Airbnb\" não bater com o Airbnb num mês, há um "
+            "pagamento que não vem nos CSV de reservas (ajuste, resolução ou "
+            "reserva em falta): vê esse mês em Pagamentos efetuados."
+        )
+
+        st.markdown("**Total do ano no Airbnb**")
 
         total_airbnb = st.number_input(
             "Total apresentado no Airbnb (€)",
@@ -2933,7 +3285,8 @@ with aba_dados:
     seccao(
         "Alojamentos",
         "Dá um nome curto a cada anúncio e indica de quem é. A foto é "
-        "escolhida pelo início do nome curto (T2, T1+1, T0, T1).",
+        "escolhida pelo início do nome curto (T2, T1+1, T0, T1). Anúncios "
+        "ignorados ou sem nenhuma estadia não entram nos relatórios.",
     )
 
     cartoes([
@@ -2947,16 +3300,19 @@ with aba_dados:
     ])
 
     base_propriedades = pd.DataFrame({
-        "Anúncio no Airbnb": listings,
-        "Nome curto": [propriedades.loc[l, "Nome"] for l in listings],
-        "Proprietário": [propriedades.loc[l, "Proprietário"] for l in listings],
-        "Reservas": [len(reservas_por_listing[l]) for l in listings],
+        "Anúncio no Airbnb": todos_listings,
+        "Nome curto": [propriedades.loc[l, "Nome"] for l in todos_listings],
+        "Proprietário": [
+            propriedades.loc[l, "Proprietário"] for l in todos_listings
+        ],
+        "Reservas": [len(reservas_por_listing[l]) for l in todos_listings],
+        "Estado": [estado_listing(l) for l in todos_listings],
     })
 
     if tem_propriedades:
         editor_propriedades = st.data_editor(
             base_propriedades,
-            disabled=["Anúncio no Airbnb", "Reservas"],
+            disabled=["Anúncio no Airbnb", "Reservas", "Estado"],
             hide_index=True,
             use_container_width=True,
             key="propriedades",
@@ -2965,7 +3321,11 @@ with aba_dados:
                     help="Por exemplo: T1+1 - Almeida Garrett",
                 ),
                 "Proprietário": st.column_config.SelectboxColumn(
-                    options=PROPRIETARIOS, required=True,
+                    options=PROPRIETARIOS + [IGNORAR], required=True,
+                    help=(
+                        "Escolhe \"Ignorar\" para um anúncio que não está "
+                        "em uso: deixa de aparecer em todos os relatórios."
+                    ),
                 ),
             },
         )
