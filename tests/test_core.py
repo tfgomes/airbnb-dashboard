@@ -413,3 +413,40 @@ def test_outros_rendimentos_aircover(reservas, noites):
 
     total = core.agregar_mensal([mensal, mensal])
     assert total["Outros rendimentos (€)"].sum() == 369.0
+
+
+def test_custos_mes_a_mes_e_anualizados():
+    custos = [
+        # Água: fatura todos os meses, com um pico em agosto.
+        {"categoria": "Água", "tipo": "Operacional", "anualizar": False,
+         "meses": [30, 30, 30, 30, 30, 40, 60, 80, 40, 30, None, None]},
+        # IMI: pago em maio e novembro, mas é um custo do ano inteiro.
+        {"categoria": "IMI", "tipo": "Impostos e taxas", "anualizar": True,
+         "meses": [None, None, None, None, 138, None, None, None, None, None, 138, None]},
+    ]
+    totais = core.custos_por_mes(custos)
+
+    assert custos[0]["anual"] == 400 and custos[1]["anual"] == 276
+    assert totais["pago"][4] == 30 + 138 and totais["pago"][10] == 138
+    assert totais["custo"][4] == pytest.approx(30 + 23) and totais["custo"][7] == pytest.approx(80 + 23)
+    assert totais["custo"][11] == pytest.approx(23)          # dezembro: só a parte do IMI
+    # Anualizar muda o mês em que o custo conta, nunca o total do ano.
+    assert sum(totais["pago"]) == pytest.approx(676)
+    assert sum(totais["custo"]) == pytest.approx(676)
+
+    resultado = core.resultado_financeiro(10000, custos)
+    assert resultado["despesas"] == pytest.approx(676)
+
+
+def test_formatos_guardados_dos_custos():
+    novo = {"month_cents": [1000, None, 2050] + [None] * 9, "annualize": True}
+    assert core.meses_do_registo(novo) == ([10.0, None, 20.5] + [None] * 9, True)
+    # Formato antigo: um valor mensal vale para os 12 meses.
+    antigo_mensal = {"monthly_cents": 40000, "annual_cents": None}
+    assert core.meses_do_registo(antigo_mensal) == ([400.0] * 12, False)
+    # Formato antigo: um valor anual fica anualizado.
+    antigo_anual = {"monthly_cents": None, "annual_cents": 27600}
+    meses, anualizar = core.meses_do_registo(antigo_anual)
+    assert sum(valor or 0 for valor in meses) == 276.0 and anualizar
+    assert core.meses_do_registo({}) == ([None] * 12, False)
+    assert all(len(linha) == 3 for linha in core.CUSTOS_SUGERIDOS)

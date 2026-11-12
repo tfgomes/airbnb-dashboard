@@ -39,7 +39,7 @@ class FalsoStreamlit(types.ModuleType):
         self.secrets = {"supabase": {"url": "x", "key": "y"}}
         self.sidebar = Contexto()
         cfg = types.SimpleNamespace()
-        for nome in ["NumberColumn", "TextColumn", "SelectboxColumn"]:
+        for nome in ["NumberColumn", "TextColumn", "SelectboxColumn", "CheckboxColumn"]:
             setattr(cfg, nome, lambda *a, **k: {"cfg": k})
         self.column_config = cfg
         self.cache_data = self._cache()
@@ -204,6 +204,25 @@ st, _ = correr("um alojamento, sem tabelas novas", {
 })
 assert any(t == "code" and "create table" in a[0] for t, a in st.saida)
 
+# 1b. Última atualização: recente não avisa; com mais de 14 dias avisa.
+from datetime import datetime, timedelta, timezone
+
+def com_data(dias):
+    momento = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    return [dict(r, updated_at=momento) for r in reservas]
+
+st, _ = correr("dados atualizados ontem", {
+    "reservations": com_data(1), "tourist_tax_monthly": taxas,
+})
+texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
+assert "dados atualizados ontem" in texto and "Última atualização dos dados" in texto
+assert not any(t == "warning" and "14 dias" in a[0] for t, a in st.saida)
+
+st, _ = correr("dados com 20 dias", {
+    "reservations": com_data(20), "tourist_tax_monthly": taxas,
+})
+assert any(t == "warning" and "há 20 dias" in a[0] for t, a in st.saida)
+
 # 2. Um alojamento com as tabelas novas e um reembolso em setembro.
 st, base = correr("um alojamento, com reembolso", {
     "reservations": reservas, "tourist_tax_monthly": taxas,
@@ -330,12 +349,43 @@ texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
 assert "19.663,04 €" in texto
 assert "30,3 %" in texto                      # ROI: 19.663,04 ÷ 65.000
 
-_, base = correr("botão guardar custos", tabelas_custos, botoes=["Guardar custos e pressupostos"])
+assert "Custos por mês" in texto and "Custos por categoria" in texto
+
+# Tabela antiga (sem as colunas mês a mês): mostra os valores, não deixa guardar.
+_, base = correr("custos em tabela antiga", tabelas_custos, botoes=["Guardar custos e pressupostos"])
+assert not base.escritas
+
+# Formato novo: valores mês a mês e IMI anualizado; guardar escreve tudo.
+tabelas_custos_novas = dict(tabelas_custos, cost_items=[
+    {"listing": LISTING, "cost_year": 2026, "category": "Limpezas", "kind": "Operacional",
+     "monthly_cents": None, "annual_cents": 480000, "month_cents": [40000] * 12,
+     "annualize": False, "notes": ""},
+    {"listing": LISTING, "cost_year": 2026, "category": "Crédito: amortização de capital",
+     "kind": "Amortização de capital", "monthly_cents": None, "annual_cents": 342000,
+     "month_cents": [28500] * 12, "annualize": False, "notes": ""},
+    {"listing": LISTING, "cost_year": 2026, "category": "IMI", "kind": "Impostos e taxas",
+     "monthly_cents": None, "annual_cents": 27600,
+     "month_cents": [None, None, None, None, 13800, None, None, None, None, None, 13800, None],
+     "annualize": True, "notes": ""},
+])
+st, base = correr("custos mês a mês, guardar", tabelas_custos_novas, botoes=["Guardar custos e pressupostos"])
 escritas = [(e[0], e[1]) for e in base.escritas]
 assert escritas == [("cost_items", "delete"), ("cost_items", "upsert"), ("cost_settings", "upsert")], escritas
 gravados = {linha["category"]: linha for linha in base.escritas[1][2]}
-assert gravados["Limpezas"]["monthly_cents"] == 40000 and gravados["IMI"]["annual_cents"] == 27600
+assert gravados["Limpezas"]["month_cents"] == [40000] * 12
+assert gravados["IMI"]["annualize"] is True and gravados["IMI"]["annual_cents"] == 27600
+assert gravados["IMI"]["month_cents"][4] == 13800 and gravados["IMI"]["month_cents"][0] is None
 assert base.escritas[2][2]["invested_cents"] == 6500000
+
+st, _ = correr("custos mês a mês, ver", tabelas_custos_novas)
+texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
+assert "19.663,04 €" in texto                 # mesmo resultado anual
+assert "708,00 €" in texto                    # custo de um mês: 400 + 285 + 276/12
+assert "823,00 €" in texto                    # pago em maio: 400 + 285 + 138
+assert "mês mais caro" not in texto           # IMI anualizado: os meses ficam iguais
+
+# Ano seguinte sem custos: fica a lista de categorias, com valores vazios.
+st, _ = correr("custos de um ano novo", tabelas_custos_novas, escolhas={"Ano": 2027})
 
 # 6. Calendário com iCal (descarga simulada) e sem iCal.
 import io
