@@ -145,7 +145,7 @@ ESTILO = """
 html, body, [class*="css"], .stMarkdown, .stApp {
     font-family: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
-.block-container { padding-top: 2.2rem; padding-bottom: 4rem; max-width: 1280px; }
+.block-container { padding-top: 5rem; padding-bottom: 4rem; max-width: 1280px; }
 section[data-testid="stSidebar"] { background: #FAFAFA; border-right: 1px solid #EBEBEB; }
 .ad-marca { font-size: 1.15rem; font-weight: 700; color: #E61E4D; letter-spacing: -0.01em; margin-bottom: 0.2rem; }
 .ad-marca-nota { font-size: 0.78rem; color: #6A6A6A; margin-bottom: 1rem; }
