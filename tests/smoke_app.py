@@ -204,6 +204,25 @@ st, _ = correr("um alojamento, sem tabelas novas", {
 })
 assert any(t == "code" and "create table" in a[0] for t, a in st.saida)
 
+# 1b. Última atualização: recente não avisa; com mais de 14 dias avisa.
+from datetime import datetime, timedelta, timezone
+
+def com_data(dias):
+    momento = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    return [dict(r, updated_at=momento) for r in reservas]
+
+st, _ = correr("dados atualizados ontem", {
+    "reservations": com_data(1), "tourist_tax_monthly": taxas,
+})
+texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
+assert "dados atualizados ontem" in texto and "Última atualização dos dados" in texto
+assert not any(t == "warning" and "14 dias" in a[0] for t, a in st.saida)
+
+st, _ = correr("dados com 20 dias", {
+    "reservations": com_data(20), "tourist_tax_monthly": taxas,
+})
+assert any(t == "warning" and "há 20 dias" in a[0] for t, a in st.saida)
+
 # 2. Um alojamento com as tabelas novas e um reembolso em setembro.
 st, base = correr("um alojamento, com reembolso", {
     "reservations": reservas, "tourist_tax_monthly": taxas,
@@ -330,7 +349,7 @@ texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
 assert "19.663,04 €" in texto
 assert "30,3 %" in texto                      # ROI: 19.663,04 ÷ 65.000
 
-assert "mês mais caro" in texto and "Custos por categoria" in texto
+assert "Custos por mês" in texto and "Custos por categoria" in texto
 
 # Tabela antiga (sem as colunas mês a mês): mostra os valores, não deixa guardar.
 _, base = correr("custos em tabela antiga", tabelas_custos, botoes=["Guardar custos e pressupostos"])
@@ -363,6 +382,7 @@ texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
 assert "19.663,04 €" in texto                 # mesmo resultado anual
 assert "708,00 €" in texto                    # custo de um mês: 400 + 285 + 276/12
 assert "823,00 €" in texto                    # pago em maio: 400 + 285 + 138
+assert "mês mais caro" not in texto           # IMI anualizado: os meses ficam iguais
 
 # Ano seguinte sem custos: fica a lista de categorias, com valores vazios.
 st, _ = correr("custos de um ano novo", tabelas_custos_novas, escolhas={"Ano": 2027})

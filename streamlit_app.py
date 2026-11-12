@@ -82,7 +82,7 @@ COR_GRELHA = "#EBEBEB"
 
 COLUNAS_RESERVAS = (
     "listing,confirmation_code,status,start_date,end_date,"
-    "nights,adults,children,infants,earnings_cents"
+    "nights,adults,children,infants,earnings_cents,updated_at"
 )
 
 SQL_CONFIGURACAO = """-- Correr uma vez no Supabase: SQL Editor > New query > Run
@@ -200,6 +200,8 @@ section[data-testid="stSidebar"] { background: #FAFAFA; border-right: 1px solid 
 .ad-cabecalho img.ad-foto { width: 132px; height: 88px; object-fit: cover; border-radius: 16px; flex: 0 0 auto; box-shadow: 0 2px 8px rgba(0,0,0,0.10); }
 .ad-cabecalho .ad-subtitulo { margin-bottom: 0; }
 .ad-miniatura { width: 56px; height: 40px; object-fit: cover; border-radius: 10px; flex: 0 0 auto; }
+.ad-atualizacao { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 0.8rem; color: #222222; padding: 5px 0; }
+.ad-atualizacao span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ad-celula-foto { display: inline-flex; align-items: center; gap: 10px; }
 .ad-tabela-caixa { border: 1px solid #EBEBEB; border-radius: 18px; overflow-x: auto; background: #FFFFFF; margin: 0.4rem 0 0.7rem 0; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
 .ad-tabela-caixa table.ad-tabela { width: 100%; border-collapse: collapse; font-size: 0.9rem; font-variant-numeric: tabular-nums; margin: 0; }
@@ -568,7 +570,10 @@ def guardar_reservas(dados):
         else:
             alterados.append(registo)
 
-    para_gravar = novos + alterados
+    # As reservas iguais também são gravadas, só para ficarem com a data
+    # desta importação: é assim que a app sabe quando cada alojamento foi
+    # atualizado pela última vez.
+    para_gravar = novos + alterados + iguais
 
     for inicio in range(0, len(para_gravar), 200):
         (
@@ -988,6 +993,47 @@ listings = [
     listing for listing in todos_listings if estado_listing(listing) == "Em uso"
 ]
 
+def calcular_ultimas_atualizacoes():
+    """Data da última importação de CSV de cada anúncio."""
+    if "updated_at" not in dados.columns:
+        return {}
+    momentos = pd.to_datetime(dados["updated_at"], utc=True, errors="coerce")
+    momentos = momentos.dt.tz_convert("Europe/Lisbon").dt.tz_localize(None)
+    ultimas = momentos.groupby(dados["Listing"]).max()
+    return {
+        listing: momento.normalize()
+        for listing, momento in ultimas.items() if not pd.isna(momento)
+    }
+
+
+ultimas_atualizacoes = calcular_ultimas_atualizacoes()
+
+
+def dias_desde_atualizacao(listing):
+    data = ultimas_atualizacoes.get(listing)
+    return None if data is None else max(0, int((HOJE - data).days))
+
+
+def texto_dias(dias):
+    if dias is None:
+        return "sem data"
+    if dias == 0:
+        return "hoje"
+    return "ontem" if dias == 1 else f"há {dias} dias"
+
+
+def etiqueta_atualizacao(listing):
+    """Etiqueta colorida: verde até 7 dias, cinzenta até 14, vermelha depois."""
+    dias = dias_desde_atualizacao(listing)
+    if dias is None:
+        classe = "neutro"
+    elif dias <= 7:
+        classe = "sobe"
+    else:
+        classe = "neutro" if dias <= 14 else "desce"
+    return f'<span class="ad-pill {classe}">{h(texto_dias(dias))}</span>'
+
+
 if not listings:
     painel_importacao()
     st.info(
@@ -1059,6 +1105,19 @@ with st.sidebar:
     )
 
 painel_importacao()
+
+with st.sidebar:
+    st.markdown(
+        '<div class="ad-marca-nota" style="margin:1rem 0 0.2rem 0">'
+        "Última atualização dos dados</div>"
+        + "".join(
+            '<div class="ad-atualizacao">'
+            f'<span>{h(propriedades.loc[listing, "Nome"])}</span>'
+            f"{etiqueta_atualizacao(listing)}</div>"
+            for listing in selecionados
+        ),
+        unsafe_allow_html=True,
+    )
 
 alojamento_unico = selecionados[0] if len(selecionados) == 1 else None
 ano = int(ano)
@@ -1152,6 +1211,12 @@ if alojamento_unico:
         f"{propriedades.loc[alojamento_unico, 'Proprietário']} · {ano} · "
         "valores sem taxa turística"
     )
+    if alojamento_unico in ultimas_atualizacoes:
+        subtitulo += (
+            " · dados atualizados "
+            f"{texto_dias(dias_desde_atualizacao(alojamento_unico))} "
+            f"({ultimas_atualizacoes[alojamento_unico]:%d/%m/%Y})"
+        )
 else:
     titulo = (
         "Todos os alojamentos" if carteira == TODOS
@@ -1168,6 +1233,17 @@ st.markdown(
     f'<p class="ad-subtitulo">{h(subtitulo)}</p></div></div>',
     unsafe_allow_html=True,
 )
+
+desatualizados = [
+    f"{propriedades.loc[listing, 'Nome']} ({texto_dias(dias_desde_atualizacao(listing))})"
+    for listing in selecionados
+    if (dias_desde_atualizacao(listing) or 0) > 14
+]
+if desatualizados:
+    st.warning(
+        "Dados com mais de 14 dias: " + ", ".join(desatualizados)
+        + ". Exporta um CSV novo do Airbnb e importa-o na barra lateral."
+    )
 
 if sobrepostos:
     st.warning(
@@ -2920,6 +2996,9 @@ with aba_custos:
 
             mes_mais_caro = max(range(12), key=lambda indice: custo_mes[indice])
             maximo_custo = max(custo_mes) or 1.0
+            # Com os meses todos iguais não há um "mês mais caro" a destacar.
+            if maximo_custo <= 1.05 * total_custos / 12:
+                mes_mais_caro = None
 
             linhas_custo_mes = []
             for indice in range(12):
@@ -3521,12 +3600,19 @@ with aba_dados:
         ],
         "Reservas": [len(reservas_por_listing[l]) for l in todos_listings],
         "Estado": [estado_listing(l) for l in todos_listings],
+        "Última atualização": [
+            f"{ultimas_atualizacoes[l]:%d/%m/%Y} ({texto_dias(dias_desde_atualizacao(l))})"
+            if l in ultimas_atualizacoes else "—"
+            for l in todos_listings
+        ],
     })
 
     if tem_propriedades:
         editor_propriedades = st.data_editor(
             base_propriedades,
-            disabled=["Anúncio no Airbnb", "Reservas", "Estado"],
+            disabled=[
+                "Anúncio no Airbnb", "Reservas", "Estado", "Última atualização",
+            ],
             hide_index=True,
             use_container_width=True,
             key="propriedades",
@@ -3620,6 +3706,7 @@ with aba_dados:
 - Antes de 2026 a taxa turística considerada é 0 €. O ajuste manual de um mês substitui o cálculo automático.
 - A comissão do Airbnb (15,5 % por omissão) está incluída no preço publicado: o preço mínimo do plano é o líquido necessário ÷ 84,5 %.
 - O plano de preços usa como referência o mesmo mês do ano anterior; se esse mês ainda não acabou, usa o do ano antes quando rendeu mais.
+- A "última atualização" de um alojamento é a data da última importação de CSV que trazia reservas dele. Acima de 14 dias aparece um aviso.
 - Nomes e contactos dos hóspedes não são guardados.
 """
     )

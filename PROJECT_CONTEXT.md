@@ -145,6 +145,10 @@ Importação de CSV
 - A mesma reserva vinda de duas contas não é conflito; valores diferentes
   para a mesma reserva são recusados.
 - Nomes e contactos dos hóspedes nunca são guardados.
+- Cada importação marca a data em todas as reservas que vinham nos ficheiros.
+  A "última atualização" de um alojamento é a mais recente dessas datas;
+  aparece na barra lateral, no cabeçalho e no separador Dados, com aviso
+  acima de 14 dias.
 
 ## 7. Separadores da app
 
