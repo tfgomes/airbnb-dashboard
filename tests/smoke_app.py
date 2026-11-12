@@ -88,6 +88,8 @@ class FalsoStreamlit(types.ModuleType):
             return escolha(opcoes)
         return escolha if escolha in opcoes else opcoes[index]
     def slider(self, rotulo, minimo, maximo, valor, **k): return valor
+    def toggle(self, rotulo, value=False, **k):
+        return self.escolhas.get(rotulo, value)
     def number_input(self, rotulo, value=0.0, **k):
         return self.escolhas.get(rotulo, value)
     def dataframe(self, tabela, **k):
@@ -309,6 +311,7 @@ assert "Alojamentos de Guilhermino" in texto and "61.819,50 €" in texto
 
 correr("Guilhermino, um alojamento", tabelas4, escolhas={"Carteira": "Guilhermino", "Alojamento": "Casa 2"})
 correr("ano 2025", tabelas4, escolhas={"Ano": 2025})
+correr("progresso acumulado", tabelas4, escolhas={"Ver acumulado desde janeiro": True})
 correr("planear o ano corrente", {"reservations": reservas, "tourist_tax_monthly": taxas}, escolhas={"Ano a planear": 2026})
 
 # 4b. Um anúncio parado ("outro") e um sem estadias não entram nos relatórios.
