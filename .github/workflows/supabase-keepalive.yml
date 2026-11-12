@@ -71,6 +71,8 @@ jobs:
           exportar tourist_tax_monthly listing,tax_year,tax_month opcional
           exportar properties listing opcional
           exportar monthly_adjustments listing,adj_year,adj_month opcional
+          exportar cost_items listing,cost_year,category opcional
+          exportar cost_settings listing,cost_year opcional
 
       - name: Guardar backup se os dados mudaram
         run: |

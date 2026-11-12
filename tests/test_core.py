@@ -233,3 +233,105 @@ def test_ficheiro_so_com_reservas_sem_valor(tmp_path):
     lote = core.preparar_lote_csv([vazio, bom])
     assert len(lote) == 1 and lote.attrs["ignoradas"] == 2
     assert lote.iloc[0]["Valor bruto"] == 500.0
+
+
+ICAL = (
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
+    "BEGIN:VEVENT\r\nDTEND;VALUE=DATE:20261116\r\nDTSTART;VALUE=DATE:20261110\r\n"
+    "UID:1@airbnb.com\r\n"
+    "DESCRIPTION:Reservation URL: https://www.airbnb.com/hosting/reservations/de\r\n"
+    " tails/HMA3A3TEJW\\nPhone Number (Last 4 Digits): 0000\r\n"
+    "SUMMARY:Reserved\r\nEND:VEVENT\r\n"
+    "BEGIN:VEVENT\r\nDTEND;VALUE=DATE:20261125\r\nDTSTART;VALUE=DATE:20261121\r\n"
+    "UID:2@airbnb.com\r\nSUMMARY:Airbnb (Not available)\r\nEND:VEVENT\r\n"
+    "BEGIN:VEVENT\r\nDTEND;VALUE=DATE:20261205\r\nDTSTART;VALUE=DATE:20261201\r\n"
+    "UID:3@airbnb.com\r\n"
+    "DESCRIPTION:Reservation URL: https://www.airbnb.com/hosting/reservations/details/HMNOVA0001\r\n"
+    "SUMMARY:Reserved\r\nEND:VEVENT\r\n"
+    "END:VCALENDAR\r\n"
+)
+
+
+def test_ler_ical():
+    eventos = core.ler_ical(ICAL)
+    assert [e["tipo"] for e in eventos] == ["reserva", "bloqueio", "reserva"]
+    assert eventos[0]["codigo"] == "HMA3A3TEJW"      # linha partida em duas
+    assert eventos[0]["inicio"] == pd.Timestamp("2026-11-10")
+    assert eventos[0]["fim"] == pd.Timestamp("2026-11-16")
+    assert eventos[1]["codigo"] is None
+    assert core.ler_ical("") == [] and core.ler_ical("lixo") == []
+
+
+def test_calendario_junta_reservas_e_ical(reservas):
+    eventos = core.eventos_calendario(reservas, core.ler_ical(ICAL), HOJE)
+    por_codigo = {e["codigo"]: e for e in eventos if e["codigo"]}
+
+    # Reserva guardada e presente no iCal: aparece uma vez, com valor.
+    olivier = por_codigo["HMA3A3TEJW"]
+    assert olivier["origem"] == "csv" and olivier["valor"] == pytest.approx(327.63)
+    assert not olivier["em_duvida"]
+    # Reserva guardada, futura, que o iCal já não tem: fica em dúvida.
+    assert por_codigo["HM2SBCPMPD"]["em_duvida"]
+    # Reserva só no iCal (ainda sem CSV) e bloqueio entram sem valor.
+    assert por_codigo["HMNOVA0001"]["origem"] == "ical"
+    assert sum(e["tipo"] == "bloqueio" for e in eventos) == 1
+    # Canceladas não entram; passadas nunca ficam em dúvida.
+    assert "HMTZARSW2K" not in por_codigo
+    assert not any(e["em_duvida"] for e in eventos if e["fim"] <= HOJE)
+
+    # Sem iCal não há dúvidas nem eventos extra.
+    so_csv = core.eventos_calendario(reservas, None, HOJE)
+    assert not any(e["em_duvida"] for e in so_csv)
+    assert all(e["origem"] == "csv" for e in so_csv)
+
+
+def test_periodos_livres_e_movimentos(reservas):
+    eventos = core.eventos_calendario(reservas, None, HOJE)
+    livres = core.periodos_livres(eventos, HOJE, 30)
+    # Olivier sai a 16, Marc entra a 17: só a noite de 16 fica livre entre os dois.
+    assert (pd.Timestamp("2026-11-16"), pd.Timestamp("2026-11-16"), 1) in livres
+    assert livres[-1][0] == pd.Timestamp("2026-11-21")   # depois do Marc, tudo livre
+
+    linhas = core.movimentos({"T1+1": eventos}, HOJE, 14)
+    resumo = [(l["data"].day, l["tipo"]) for l in linhas]
+    assert resumo == [(16, "Saída"), (17, "Entrada"), (21, "Saída")]
+
+    # Saída e entrada no mesmo dia contam como troca.
+    extra = eventos + [{
+        "inicio": pd.Timestamp("2026-11-21"), "fim": pd.Timestamp("2026-11-23"),
+        "tipo": "reserva", "codigo": "X", "noites": 2, "hospedes": 2,
+        "valor": 100.0, "origem": "csv", "em_duvida": False,
+    }]
+    linhas = core.movimentos({"T1+1": extra}, HOJE, 14)
+    assert (21, "Troca") in [(l["data"].day, l["tipo"]) for l in linhas]
+
+
+def test_resultado_financeiro_reproduz_a_folha_de_calculo():
+    # Cenário 5 da folha: 30.000 € de receita, 19.855 € de despesas
+    # (inclui 3.420 € de amortização de capital) e IRS de 35 % × 28 %.
+    # A comissão da plataforma (900 €) fica aqui como custo porque a folha
+    # parte da receita antes da comissão.
+    custos = [
+        {"tipo": "Juros do crédito", "anual": 8424 - 3420},
+        {"tipo": "Amortização de capital", "anual": 3420},
+        {"tipo": "Operacional", "anual": 60 + 240 + 216 + 67 + 792 + 360 + 900 + 4800 + 600 + 300 + 480 + 420 + 720},
+        {"tipo": "Impostos e taxas", "anual": 276 + 1200},
+    ]
+    r = core.resultado_financeiro(
+        30000, custos, capital_investido=65000, noites=298, media_noite=100.0,
+    )
+    assert r["despesas"] == pytest.approx(19855)
+    assert r["sobra"] == pytest.approx(10145)
+    assert r["irs"] == pytest.approx(2940)
+    assert r["resultado"] == pytest.approx(7205)
+    assert r["com_amortizacao"] == pytest.approx(10625)
+    assert r["roi"] == pytest.approx(11.08, abs=0.01)
+    assert r["roi_com_amortizacao"] == pytest.approx(16.35, abs=0.01)
+    # No ponto de equilíbrio o resultado é zero.
+    equilibrio = core.resultado_financeiro(r["receita_equilibrio"], custos)
+    assert equilibrio["resultado"] == pytest.approx(0, abs=0.01)
+
+    real = core.resultado_financeiro(30000, custos, irs_real=1500)
+    assert real["irs"] == 1500 and real["usa_irs_real"]
+    assert core.valor_anual(400, None) == 4800 and core.valor_anual(400, 5000) == 5000
+    assert core.valor_anual(None, None) == 0

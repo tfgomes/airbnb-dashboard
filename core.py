@@ -769,3 +769,311 @@ def cenarios_desconto(plano, descontos=(5, 7, 10, 15, 20)):
             plano["Preço de tabela (€)"] * (1 - desconto / 100)
         )
     return tabela
+
+
+# =========================================================
+# CALENDÁRIO (iCal + reservas guardadas)
+# =========================================================
+
+def ler_ical(texto):
+    """Lê um calendário iCal do Airbnb.
+
+    Devolve uma lista de eventos com início, fim (dia de saída), tipo
+    ("reserva" ou "bloqueio") e o código da reserva quando existe.
+    """
+    import re
+
+    # Linhas longas vêm partidas; a continuação começa por espaço ou tab.
+    texto = re.sub(r"\r?\n[ \t]", "", texto or "")
+    eventos = []
+    atual = None
+
+    for linha in texto.splitlines():
+        linha = linha.strip()
+        if linha == "BEGIN:VEVENT":
+            atual = {}
+            continue
+        if linha == "END:VEVENT":
+            if atual is not None and "DTSTART" in atual and "DTEND" in atual:
+                inicio = _data_ical(atual["DTSTART"])
+                fim = _data_ical(atual["DTEND"])
+                if inicio is not None and fim is not None and fim > inicio:
+                    resumo = atual.get("SUMMARY", "")
+                    descricao = atual.get("DESCRIPTION", "").replace("\\n", "\n")
+                    codigo = re.search(r"details/([A-Z0-9]{6,})", descricao)
+                    reserva = bool(codigo) or resumo.lower().startswith("reserved")
+                    eventos.append({
+                        "inicio": inicio,
+                        "fim": fim,
+                        "tipo": "reserva" if reserva else "bloqueio",
+                        "codigo": codigo.group(1) if codigo else None,
+                        "resumo": resumo,
+                    })
+            atual = None
+            continue
+        if atual is not None and ":" in linha:
+            nome, valor = linha.split(":", 1)
+            atual[nome.split(";", 1)[0].upper()] = valor
+
+    return eventos
+
+
+def _data_ical(valor):
+    digitos = "".join(caracter for caracter in valor if caracter.isdigit())[:8]
+    if len(digitos) < 8:
+        return None
+    return pd.to_datetime(digitos, format="%Y%m%d", errors="coerce")
+
+
+def eventos_calendario(reservas, eventos_ical, hoje):
+    """Junta as reservas guardadas com o iCal de um alojamento.
+
+    reservas      reservas do alojamento (da base de dados, inclui canceladas)
+    eventos_ical  resultado de `ler_ical`, ou None se não houver iCal
+
+    Cada evento tem: inicio, fim, tipo, codigo, noites, hospedes, valor e
+    origem ("csv", "ical"). As reservas futuras guardadas que já não aparecem
+    no iCal ficam com `em_duvida=True` (podem ter sido canceladas).
+    """
+    eventos = []
+    ativas = reservas[~reservas["Cancelada"]] if len(reservas) else reservas
+
+    codigos_ical = {
+        evento["codigo"] for evento in (eventos_ical or []) if evento["codigo"]
+    }
+    # Só se pode desconfiar de uma reserva se o iCal traz códigos.
+    pode_duvidar = bool(codigos_ical)
+
+    codigos_guardados = set()
+    periodos_guardados = set()
+
+    for _, reserva in ativas.iterrows():
+        codigo = reserva["Confirmation code"]
+        codigos_guardados.add(codigo)
+        periodos_guardados.add((reserva["Entrada"], reserva["Saída"]))
+        eventos.append({
+            "inicio": reserva["Entrada"],
+            "fim": reserva["Saída"],
+            "tipo": "reserva",
+            "codigo": codigo,
+            "noites": int(reserva["Noites"]),
+            "hospedes": int(reserva["Total hóspedes"]),
+            "valor": float(reserva["Valor bruto"]),
+            "origem": "csv",
+            "em_duvida": bool(
+                pode_duvidar
+                and reserva["Saída"] > hoje
+                and codigo not in codigos_ical
+            ),
+        })
+
+    for evento in eventos_ical or []:
+        if evento["tipo"] == "reserva":
+            if evento["codigo"] in codigos_guardados:
+                continue
+            if (evento["inicio"], evento["fim"]) in periodos_guardados:
+                continue
+        eventos.append({
+            "inicio": evento["inicio"],
+            "fim": evento["fim"],
+            "tipo": evento["tipo"],
+            "codigo": evento["codigo"],
+            "noites": int((evento["fim"] - evento["inicio"]).days),
+            "hospedes": None,
+            "valor": None,
+            "origem": "ical",
+            "em_duvida": False,
+        })
+
+    return sorted(eventos, key=lambda evento: (evento["inicio"], evento["fim"]))
+
+
+def noites_ocupadas(eventos):
+    """Conjunto dos dias (noites) ocupados por reservas ou bloqueios."""
+    ocupadas = set()
+    for evento in eventos:
+        ocupadas.update(
+            pd.date_range(evento["inicio"], evento["fim"], inclusive="left")
+        )
+    return ocupadas
+
+
+def periodos_livres(eventos, inicio, dias):
+    """Períodos sem reserva nem bloqueio nos `dias` a partir de `inicio`.
+
+    Devolve uma lista de (primeira noite livre, última noite livre, noites).
+    """
+    ocupadas = noites_ocupadas(eventos)
+    periodos = []
+    aberto = None
+
+    for data in pd.date_range(inicio, periods=dias):
+        if data in ocupadas:
+            if aberto is not None:
+                periodos.append((aberto[0], aberto[1], (aberto[1] - aberto[0]).days + 1))
+                aberto = None
+        elif aberto is None:
+            aberto = [data, data]
+        else:
+            aberto[1] = data
+
+    if aberto is not None:
+        periodos.append((aberto[0], aberto[1], (aberto[1] - aberto[0]).days + 1))
+    return periodos
+
+
+def movimentos(eventos_por_alojamento, inicio, dias):
+    """Entradas e saídas dos próximos dias, para planear limpezas.
+
+    eventos_por_alojamento  {nome: lista de eventos}
+    Devolve linhas ordenadas por data com o tipo "Entrada", "Saída" ou
+    "Troca" (saída e entrada no mesmo dia, no mesmo alojamento).
+    """
+    fim = inicio + pd.Timedelta(days=dias)
+    por_dia = {}
+
+    for nome, eventos in eventos_por_alojamento.items():
+        for evento in eventos:
+            if evento["tipo"] != "reserva":
+                continue
+            if inicio <= evento["inicio"] < fim:
+                por_dia.setdefault((evento["inicio"], nome), {})["entrada"] = evento
+            if inicio <= evento["fim"] < fim:
+                por_dia.setdefault((evento["fim"], nome), {})["saida"] = evento
+
+    linhas = []
+    for (data, nome), partes in sorted(por_dia.items(), key=lambda item: item[0]):
+        if "entrada" in partes and "saida" in partes:
+            tipo = "Troca"
+        elif "entrada" in partes:
+            tipo = "Entrada"
+        else:
+            tipo = "Saída"
+        linhas.append({
+            "data": data,
+            "alojamento": nome,
+            "tipo": tipo,
+            "entrada": partes.get("entrada"),
+            "saida": partes.get("saida"),
+        })
+    return linhas
+
+
+# =========================================================
+# CUSTOS E RETORNO DO INVESTIMENTO
+# =========================================================
+
+TIPOS_CUSTO = [
+    "Operacional",
+    "Impostos e taxas",
+    "Juros do crédito",
+    "Amortização de capital",
+]
+
+# A comissão do Airbnb não está aqui: a receita usada já vem depois dela.
+CUSTOS_SUGERIDOS = [
+    ("Crédito: juros", "Juros do crédito"),
+    ("Crédito: amortização de capital", "Amortização de capital"),
+    ("Comissão de conta bancária", "Operacional"),
+    ("Seguro de vida", "Operacional"),
+    ("Seguro multirriscos", "Operacional"),
+    ("Seguro de responsabilidade civil", "Operacional"),
+    ("Condomínio", "Operacional"),
+    ("Extra condomínio", "Operacional"),
+    ("IMI", "Impostos e taxas"),
+    ("IVA das estadias", "Impostos e taxas"),
+    ("IVA da comissão da plataforma", "Impostos e taxas"),
+    ("Limpezas", "Operacional"),
+    ("Consumíveis e loiça", "Operacional"),
+    ("Internet e TV", "Operacional"),
+    ("Água", "Operacional"),
+    ("Gás", "Operacional"),
+    ("Eletricidade", "Operacional"),
+    ("Manutenção e reparações", "Operacional"),
+]
+
+
+def valor_anual(mensal, anual):
+    """O valor anual escrito ganha; senão usa o mensal × 12."""
+    if not _vazio(anual) and float(anual) > 0:
+        return float(anual)
+    if not _vazio(mensal) and float(mensal) > 0:
+        return float(mensal) * 12
+    return 0.0
+
+
+def resultado_financeiro(
+    receita, custos, capital_investido=0.0, valor_imovel=0.0,
+    coeficiente=0.35, taxa_irs=0.28, irs_real=None,
+    noites=0.0, media_noite=None, dias_ano=365,
+):
+    """Conta de exploração anual de um alojamento.
+
+    receita   receita líquida do ano (depois da comissão do Airbnb e sem
+              taxa turística)
+    custos    lista de dicionários com "tipo" e "anual"
+    coeficiente, taxa_irs   estimativa de IRS: receita × coeficiente × taxa
+    irs_real  IRS efetivamente pago; se indicado, substitui a estimativa
+    """
+    por_tipo = {tipo: 0.0 for tipo in TIPOS_CUSTO}
+    for custo in custos:
+        tipo = custo.get("tipo")
+        if tipo not in por_tipo:
+            tipo = "Operacional"
+        por_tipo[tipo] += float(custo.get("anual") or 0.0)
+
+    operacionais = por_tipo["Operacional"]
+    impostos = por_tipo["Impostos e taxas"]
+    juros = por_tipo["Juros do crédito"]
+    amortizacao = por_tipo["Amortização de capital"]
+    despesas = operacionais + impostos + juros + amortizacao
+
+    irs_estimado = max(0.0, receita) * coeficiente * taxa_irs
+    usa_irs_real = not _vazio(irs_real) and float(irs_real) > 0
+    irs = float(irs_real) if usa_irs_real else irs_estimado
+
+    sobra = receita - despesas
+    resultado = sobra - irs
+    com_amortizacao = resultado + amortizacao
+
+    # Receita que cobre todas as despesas e o IRS que ela própria gera.
+    fator = 1 - coeficiente * taxa_irs
+    receita_equilibrio = despesas / fator if fator > 0 else None
+    noites_equilibrio = (
+        receita_equilibrio / media_noite
+        if receita_equilibrio is not None and media_noite else None
+    )
+
+    def racio(valor, base):
+        return 100 * valor / base if base else None
+
+    return {
+        "receita": receita,
+        "operacionais": operacionais,
+        "impostos": impostos,
+        "juros": juros,
+        "amortizacao": amortizacao,
+        "despesas": despesas,
+        "sobra": sobra,
+        "irs": irs,
+        "irs_estimado": irs_estimado,
+        "usa_irs_real": usa_irs_real,
+        "resultado": resultado,
+        "com_amortizacao": com_amortizacao,
+        "margem": racio(resultado, receita),
+        "peso_despesas": racio(despesas, receita),
+        "roi": racio(resultado, capital_investido),
+        "roi_com_amortizacao": racio(com_amortizacao, capital_investido),
+        "rendimento_bruto_imovel": racio(receita, valor_imovel),
+        "anos_retorno": (
+            capital_investido / com_amortizacao
+            if capital_investido and com_amortizacao > 0 else None
+        ),
+        "custo_por_noite": (despesas + irs) / noites if noites else None,
+        "receita_equilibrio": receita_equilibrio,
+        "noites_equilibrio": noites_equilibrio,
+        "ocupacao_equilibrio": (
+            min(100.0, 100 * noites_equilibrio / dias_ano)
+            if noites_equilibrio is not None else None
+        ),
+    }
