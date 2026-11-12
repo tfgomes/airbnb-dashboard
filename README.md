@@ -12,6 +12,7 @@ preços de vários alojamentos no Airbnb, por proprietário.
 | `tests/test_core.py` | Testes dos cálculos com os dados reais de `backups/` |
 | `tests/smoke_app.py` | Corre a app inteira com Streamlit/Plotly/Supabase simulados |
 | `supabase/001_alojamentos_e_reembolsos.sql` | Tabelas `properties` e `monthly_adjustments` |
+| `supabase/002_custos_e_roi.sql` | Tabelas `cost_items` e `cost_settings` (custos e ROI) |
 | `.github/workflows/supabase-keepalive.yml` | Mantém o Supabase ativo e faz backup diário |
 | `backups/` | Backup em CSV das tabelas (sem dados pessoais) |
 | `assets/` | Foto de cada alojamento; o ficheiro tem o início do nome curto (`t2.jpg`, `t1+1.jpg`, `t0.jpg`, `t1.jpg`) |
@@ -53,3 +54,17 @@ uv run python tests/smoke_app.py
 - Plano de preços: objetivo mensal = mês de referência × (1 + crescimento);
   preço mínimo = líquido por noite ÷ (1 − comissão); preço de tabela =
   preço mínimo ÷ (1 − desconto médio).
+
+## Calendário (iCal)
+
+As ligações iCal do Airbnb ficam nos Secrets do Streamlit, nunca no repositório.
+A chave é o início do nome curto do alojamento:
+
+```
+[ical]
+"t1+1" = "https://www.airbnb.com/calendar/ical/....ics?s=...."
+"t2" = "https://www.airbnb.com/calendar/ical/....ics?s=...."
+```
+
+Sem ligações (ou se o Airbnb não responder), o calendário usa só as reservas
+guardadas a partir dos CSV.

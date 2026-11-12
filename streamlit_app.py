@@ -2,6 +2,7 @@ import base64
 import html
 import importlib
 import re
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -100,7 +101,39 @@ alter table public.monthly_adjustments enable row level security;
 
 grant select, insert, update, delete on public.properties to service_role;
 grant select, insert, update, delete on public.monthly_adjustments to service_role;
+
+create table if not exists public.cost_items (
+    listing text not null,
+    cost_year integer not null,
+    category text not null,
+    kind text not null default 'Operacional',
+    monthly_cents bigint,
+    annual_cents bigint,
+    notes text,
+    updated_at timestamptz not null default now(),
+    primary key (listing, cost_year, category)
+);
+
+create table if not exists public.cost_settings (
+    listing text not null,
+    cost_year integer not null,
+    invested_cents bigint not null default 0,
+    property_value_cents bigint not null default 0,
+    taxable_pct numeric not null default 35,
+    tax_rate_pct numeric not null default 28,
+    tax_paid_cents bigint not null default 0,
+    updated_at timestamptz not null default now(),
+    primary key (listing, cost_year)
+);
+
+alter table public.cost_items enable row level security;
+alter table public.cost_settings enable row level security;
+
+grant select, insert, update, delete on public.cost_items to service_role;
+grant select, insert, update, delete on public.cost_settings to service_role;
 """
+
+DIAS_SEMANA = ["S", "T", "Q", "Q", "S", "S", "D"]
 
 
 # =========================================================
@@ -147,6 +180,7 @@ section[data-testid="stSidebar"] { background: #FAFAFA; border-right: 1px solid 
 .ad-cabecalho img.ad-foto { width: 132px; height: 88px; object-fit: cover; border-radius: 16px; flex: 0 0 auto; box-shadow: 0 2px 8px rgba(0,0,0,0.10); }
 .ad-cabecalho .ad-subtitulo { margin-bottom: 0; }
 .ad-miniatura { width: 56px; height: 40px; object-fit: cover; border-radius: 10px; flex: 0 0 auto; }
+.ad-celula-foto { display: inline-flex; align-items: center; gap: 10px; }
 .ad-tabela-caixa { border: 1px solid #EBEBEB; border-radius: 18px; overflow-x: auto; background: #FFFFFF; margin: 0.4rem 0 0.7rem 0; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
 .ad-tabela-caixa table.ad-tabela { width: 100%; border-collapse: collapse; font-size: 0.9rem; font-variant-numeric: tabular-nums; margin: 0; }
 .ad-tabela-caixa table.ad-tabela th { text-align: right; font-weight: 600; font-size: 0.7rem; letter-spacing: 0.04em; text-transform: uppercase; color: #6A6A6A; padding: 12px 12px; border: none !important; border-bottom: 1px solid #EBEBEB !important; white-space: nowrap; background: #FAFAFA; }
@@ -167,6 +201,32 @@ section[data-testid="stSidebar"] { background: #FAFAFA; border-right: 1px solid 
 .ad-mini i { display: inline-block; width: 60px; height: 6px; border-radius: 999px; background: #EDEDED; overflow: hidden; }
 .ad-mini i b { display: block; height: 100%; border-radius: 999px; background: #222222; }
 .ad-mini.rosa i b { background: linear-gradient(90deg, #E61E4D, #D70466); }
+.ad-cal-caixa { border: 1px solid #EBEBEB; border-radius: 18px; overflow-x: auto; background: #FFFFFF; margin: 0.4rem 0 0.7rem 0; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+.ad-cal { min-width: 1040px; }
+.ad-cal-linha { display: flex; align-items: stretch; border-bottom: 1px solid #F2F2F2; }
+.ad-cal-linha:last-child { border-bottom: none; }
+.ad-cal-nome { flex: 0 0 210px; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-right: 1px solid #EBEBEB; min-width: 0; }
+.ad-cal-nome b { display: block; font-size: 0.86rem; color: #222222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-cal-nome span { display: block; font-size: 0.72rem; color: #6A6A6A; }
+.ad-cal-pista { flex: 1 1 auto; position: relative; min-height: 60px; }
+.ad-cal-fundo, .ad-cal-eventos, .ad-cal-dias { display: grid; position: absolute; inset: 0; }
+.ad-cal-dias { position: relative; flex: 1 1 auto; }
+.ad-cal-celula { border-right: 1px solid #F4F4F4; }
+.ad-cal-celula.fds { background: #FAFAFA; }
+.ad-cal-celula.hoje { background: #FFF0F3; }
+.ad-cal-dia { text-align: center; padding: 8px 0 6px 0; font-size: 0.68rem; color: #6A6A6A; border-right: 1px solid #F4F4F4; background: #FAFAFA; }
+.ad-cal-dia b { display: block; font-size: 0.86rem; color: #222222; font-weight: 600; }
+.ad-cal-dia.hoje b { background: #E61E4D; color: #FFFFFF; border-radius: 999px; width: 24px; height: 24px; line-height: 24px; margin: 0 auto; }
+.ad-cal-eventos { align-items: center; }
+.ad-cal-ev { grid-row: 1; height: 30px; margin: 0 2px; border-radius: 999px; padding: 0 10px; font-size: 0.74rem; font-weight: 600; line-height: 30px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #FFFFFF; background: linear-gradient(90deg, #E61E4D, #D70466); }
+.ad-cal-ev.passada { background: #B0B0B0; }
+.ad-cal-ev.atual { background: #222222; }
+.ad-cal-ev.ical { background: #FFFFFF; color: #D70466; border: 2px solid #E61E4D; line-height: 26px; }
+.ad-cal-ev.duvida { background: #FFFFFF; color: #B32505; border: 2px dashed #B32505; line-height: 26px; }
+.ad-cal-ev.bloqueio { background: repeating-linear-gradient(45deg, #EDEDED, #EDEDED 6px, #F8F8F8 6px, #F8F8F8 12px); color: #6A6A6A; font-weight: 500; }
+.ad-legenda { display: flex; flex-wrap: wrap; gap: 14px; font-size: 0.78rem; color: #6A6A6A; margin: 0.2rem 0 0.8rem 0; }
+.ad-legenda span { display: inline-flex; align-items: center; gap: 6px; }
+.ad-legenda .ad-cal-ev { display: inline-block; height: 14px; width: 30px; margin: 0; padding: 0; line-height: 10px; }
 .stTabs [data-baseweb="tab-list"] { gap: 6px; border-bottom: 1px solid #EBEBEB; }
 .stTabs [data-baseweb="tab"] { font-weight: 600; padding: 10px 14px; }
 div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] { border-radius: 14px; }
@@ -336,6 +396,14 @@ def imagem_html(nome, classe):
     return (
         f'<img class="{classe}" alt="{h(nome)}" '
         f'src="data:image/jpeg;base64,{dados_foto}">'
+    )
+
+
+def c_alojamento(nome):
+    """Miniatura e nome do alojamento, alinhados, para a primeira coluna."""
+    return (
+        '<span class="ad-celula-foto">'
+        + imagem_html(nome, "ad-miniatura") + h(nome) + "</span>"
     )
 
 
@@ -585,6 +653,92 @@ def guardar_propriedades(editor):
     supabase.table("properties").upsert(registos, on_conflict="listing").execute()
 
 
+def guardar_custos(listing, ano, editor, definicoes):
+    agora = agora_iso()
+
+    def centimos(valor):
+        if valor is None or pd.isna(valor) or float(valor) <= 0:
+            return None
+        return int(round(float(valor) * 100))
+
+    linhas = {}
+    for _, linha in editor.iterrows():
+        categoria = linha["Categoria"]
+        categoria = "" if pd.isna(categoria) else str(categoria).strip()
+        if not categoria:
+            continue
+        tipo = linha["Tipo"]
+        notas = linha.get("Notas", "")
+        linhas[categoria] = {
+            "listing": listing,
+            "cost_year": int(ano),
+            "category": categoria,
+            "kind": core.TIPOS_CUSTO[0] if pd.isna(tipo) or not tipo else str(tipo),
+            "monthly_cents": centimos(linha["Mensal (€)"]),
+            "annual_cents": centimos(linha["Anual (€)"]),
+            "notes": "" if pd.isna(notas) else str(notas or ""),
+            "updated_at": agora,
+        }
+
+    # Apaga primeiro as linhas do ano, para as removidas no editor saírem.
+    (
+        supabase.table("cost_items")
+        .delete()
+        .eq("listing", listing)
+        .eq("cost_year", int(ano))
+        .execute()
+    )
+    if linhas:
+        (
+            supabase.table("cost_items")
+            .upsert(list(linhas.values()), on_conflict="listing,cost_year,category")
+            .execute()
+        )
+
+    (
+        supabase.table("cost_settings")
+        .upsert(
+            {
+                "listing": listing,
+                "cost_year": int(ano),
+                "invested_cents": int(round(definicoes["capital"] * 100)),
+                "property_value_cents": int(round(definicoes["imovel"] * 100)),
+                "taxable_pct": float(definicoes["coeficiente"]),
+                "tax_rate_pct": float(definicoes["taxa"]),
+                "tax_paid_cents": int(round(definicoes["irs_real"] * 100)),
+                "updated_at": agora,
+            },
+            on_conflict="listing,cost_year",
+        )
+        .execute()
+    )
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def descarregar_ical(url):
+    """Lê o calendário iCal de um alojamento. Devolve None se falhar."""
+    try:
+        pedido = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(pedido, timeout=10) as resposta:
+            texto = resposta.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    if "BEGIN:VCALENDAR" not in texto:
+        return None
+    return core.ler_ical(texto)
+
+
+def ligacoes_ical():
+    """Ligações iCal guardadas nos Secrets, por código (t0, t1, t1+1, t2)."""
+    try:
+        return {
+            str(chave).strip().lower(): str(valor).strip()
+            for chave, valor in dict(st.secrets["ical"]).items()
+        }
+    except Exception:
+        return {}
+
+
 def indexar_mensal(registos, ano_campo, mes_campo, valor_campo):
     """{(listing, ano): {mês: {"valor": euros, "notes": texto}}}"""
     indice = {}
@@ -604,10 +758,13 @@ def indexar_mensal(registos, ano_campo, mes_campo, valor_campo):
 def painel_importacao():
     with st.sidebar:
         with st.expander("Importar reservas (CSV)"):
+            # A chave muda depois de cada importação, para a lista de
+            # ficheiros ficar vazia e pronta para os seguintes.
             ficheiros = st.file_uploader(
                 "CSV de reservas Airbnb",
                 type=["csv"],
                 accept_multiple_files=True,
+                key=f"csv_{st.session_state.get('versao_upload', 0)}",
             )
             if ficheiros and st.button(
                 "Guardar ou atualizar reservas",
@@ -621,6 +778,9 @@ def painel_importacao():
                         "ignoradas", 0,
                     )
                     st.session_state["importacao"] = resultado_importacao
+                    st.session_state["versao_upload"] = (
+                        st.session_state.get("versao_upload", 0) + 1
+                    )
                     limpar_cache()
                     st.rerun()
                 except Exception as erro:
@@ -687,8 +847,19 @@ registos_propriedades = ler_tabela_opcional(
     "properties", "listing,display_name,owner",
 )
 
+registos_custos = ler_tabela_opcional(
+    "cost_items",
+    "listing,cost_year,category,kind,monthly_cents,annual_cents,notes",
+)
+registos_definicoes = ler_tabela_opcional(
+    "cost_settings",
+    "listing,cost_year,invested_cents,property_value_cents,"
+    "taxable_pct,tax_rate_pct,tax_paid_cents",
+)
+
 tem_reembolsos = registos_reembolsos is not None
 tem_propriedades = registos_propriedades is not None
+tem_custos = registos_custos is not None and registos_definicoes is not None
 
 taxas = indexar_mensal(registos_taxa, "tax_year", "tax_month", "manual_tax_cents")
 reembolsos = indexar_mensal(
@@ -939,15 +1110,19 @@ if tem_propriedades and por_configurar and len(listings) > 1:
 
 (
     aba_desempenho,
+    aba_calendario,
     aba_mensal,
     aba_precos,
+    aba_custos,
     aba_reconciliacao,
     aba_taxa,
     aba_dados,
 ) = st.tabs([
     "Desempenho",
+    "Calendário",
     "Mensal",
     "Plano de preços",
+    "Custos e ROI",
     "Reconciliação",
     "Taxa turística",
     "Dados",
@@ -1127,6 +1302,281 @@ with aba_desempenho:
         )
     figura_ocupacao.update_yaxes(range=[0, 115], ticksuffix=" %")
     mostrar_grafico(estilo_grafico(figura_ocupacao, altura=300))
+
+
+# =========================================================
+# CALENDÁRIO
+# =========================================================
+
+with aba_calendario:
+
+    ligacoes = ligacoes_ical()
+    falhas_ical = []
+    eventos_por_listing = {}
+
+    for listing in selecionados:
+        nome_alojamento = propriedades.loc[listing, "Nome"]
+        ligacao = ligacoes.get(codigo_foto(nome_alojamento))
+        eventos_ical = descarregar_ical(ligacao) if ligacao else None
+        if ligacao and eventos_ical is None:
+            falhas_ical.append(nome_alojamento)
+        eventos_por_listing[listing] = core.eventos_calendario(
+            reservas_por_listing[listing], eventos_ical, HOJE,
+        )
+
+    primeiras_noites = [
+        noites_por_listing[listing]["Data"].min()
+        for listing in selecionados
+        if len(noites_por_listing[listing])
+    ]
+    primeiro_mes = min(primeiras_noites + [HOJE]).replace(day=1)
+    meses_calendario = list(pd.date_range(
+        primeiro_mes, HOJE.replace(day=1) + pd.DateOffset(months=12), freq="MS",
+    ))
+    rotulos_meses = [
+        f"{MESES[mes.month - 1]} de {mes.year}" for mes in meses_calendario
+    ]
+    mes_atual = HOJE.replace(day=1)
+
+    coluna_mes, _ = st.columns([1, 3])
+    with coluna_mes:
+        rotulo_mes = st.selectbox(
+            "Mês",
+            rotulos_meses,
+            index=(
+                meses_calendario.index(mes_atual)
+                if mes_atual in meses_calendario else len(meses_calendario) - 1
+            ),
+            key="mes_calendario",
+        )
+
+    inicio_mes = meses_calendario[rotulos_meses.index(rotulo_mes)]
+    dias_mes = inicio_mes.days_in_month
+    fim_mes = inicio_mes + pd.Timedelta(days=dias_mes)
+    datas_mes = list(pd.date_range(inicio_mes, periods=dias_mes))
+
+    def classe_dia(data):
+        if data == HOJE:
+            return " hoje"
+        return " fds" if data.dayofweek >= 5 else ""
+
+    grelha_dias = f"grid-template-columns:repeat({dias_mes},1fr)"
+    grelha_eventos = f"grid-template-columns:repeat({2 * dias_mes},1fr)"
+
+    cabecalho_dias = "".join(
+        f'<div class="ad-cal-dia{classe_dia(data)}">'
+        f"{DIAS_SEMANA[data.dayofweek]}<b>{data.day}</b></div>"
+        for data in datas_mes
+    )
+    fundo_dias = "".join(
+        f'<div class="ad-cal-celula{classe_dia(data)}"></div>' for data in datas_mes
+    )
+
+    def barra_evento(evento):
+        """Barra de uma reserva: da tarde da entrada à manhã da saída."""
+        if evento["inicio"] < inicio_mes:
+            coluna_inicio = 1
+        else:
+            coluna_inicio = 2 * (evento["inicio"] - inicio_mes).days + 2
+        if evento["fim"] >= fim_mes:
+            coluna_fim = 2 * dias_mes + 1
+        else:
+            coluna_fim = 2 * (evento["fim"] - inicio_mes).days + 2
+
+        periodo = f"{evento['inicio']:%d/%m} → {evento['fim']:%d/%m}"
+
+        if evento["tipo"] == "bloqueio":
+            classe, rotulo = "bloqueio", "Indisponível"
+            detalhe = f"Bloqueado · {periodo}"
+        else:
+            if evento["em_duvida"]:
+                classe = "duvida"
+            elif evento["origem"] == "ical":
+                classe = "ical"
+            elif evento["fim"] <= HOJE:
+                classe = "passada"
+            elif evento["inicio"] <= HOJE:
+                classe = "atual"
+            else:
+                classe = ""
+
+            if evento["valor"] is None:
+                rotulo = f"{evento['noites']} n · reservado"
+                detalhe = (
+                    f"{evento['codigo'] or 'Reserva'} · {periodo} · "
+                    f"{evento['noites']} noites · ainda sem CSV"
+                )
+            else:
+                rotulo = (
+                    f"{evento['noites']} n · {evento['hospedes']} hósp. · "
+                    f"{etiqueta_euros(evento['valor']) or '0 €'}"
+                )
+                detalhe = (
+                    f"{evento['codigo']} · {periodo} · {evento['noites']} noites · "
+                    f"{evento['hospedes']} hóspedes · {euros(evento['valor'])}"
+                )
+            if evento["em_duvida"]:
+                detalhe += " · não aparece no iCal: confirma se foi cancelada"
+
+        return (
+            f'<div class="ad-cal-ev {classe}" title="{h(detalhe)}" '
+            f'style="grid-column:{coluna_inicio} / {coluna_fim}">{h(rotulo)}</div>'
+        )
+
+    linhas_calendario = [
+        '<div class="ad-cal-linha"><div class="ad-cal-nome"></div>'
+        f'<div class="ad-cal-dias" style="{grelha_dias}">{cabecalho_dias}</div></div>'
+    ]
+
+    ocupadas_mes_total = 0
+    for listing in selecionados:
+        nome_alojamento = propriedades.loc[listing, "Nome"]
+        eventos = eventos_por_listing[listing]
+        visiveis = [
+            evento for evento in eventos
+            if evento["fim"] >= inicio_mes and evento["inicio"] < fim_mes
+        ]
+        ocupadas = core.noites_ocupadas(
+            [evento for evento in visiveis if evento["tipo"] == "reserva"]
+        )
+        ocupadas_mes = sum(1 for data in datas_mes if data in ocupadas)
+        ocupadas_mes_total += ocupadas_mes
+
+        linhas_calendario.append(
+            '<div class="ad-cal-linha">'
+            '<div class="ad-cal-nome">'
+            + imagem_html(nome_alojamento, "ad-miniatura")
+            + f"<div><b>{h(nome_alojamento)}</b>"
+            f"<span>{ocupadas_mes} de {dias_mes} noites reservadas</span></div></div>"
+            '<div class="ad-cal-pista">'
+            f'<div class="ad-cal-fundo" style="{grelha_dias}">{fundo_dias}</div>'
+            f'<div class="ad-cal-eventos" style="{grelha_eventos}">'
+            + "".join(barra_evento(evento) for evento in visiveis)
+            + "</div></div></div>"
+        )
+
+    seccao(
+        rotulo_mes[0].upper() + rotulo_mes[1:],
+        f"{ocupadas_mes_total} noites reservadas em "
+        f"{dias_mes * len(selecionados)} possíveis. Cada barra vai da tarde "
+        "da entrada à manhã da saída; passa o rato por cima para ver os detalhes.",
+    )
+
+    st.markdown(
+        '<div class="ad-cal-caixa"><div class="ad-cal">'
+        + "".join(linhas_calendario)
+        + "</div></div>"
+        '<div class="ad-legenda">'
+        '<span><i class="ad-cal-ev passada"></i>Terminada</span>'
+        '<span><i class="ad-cal-ev atual"></i>A decorrer</span>'
+        '<span><i class="ad-cal-ev"></i>Confirmada</span>'
+        '<span><i class="ad-cal-ev ical"></i>No Airbnb, ainda sem CSV</span>'
+        '<span><i class="ad-cal-ev duvida"></i>No CSV mas não no Airbnb</span>'
+        '<span><i class="ad-cal-ev bloqueio"></i>Indisponível</span>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    if not ligacoes:
+        st.caption(
+            "Calendário feito só com as reservas dos CSV. Para ver também "
+            "bloqueios e reservas ainda não importadas, adiciona as ligações "
+            "iCal (instruções no separador Dados)."
+        )
+    if falhas_ical:
+        st.warning(
+            "Não foi possível ler o iCal de: " + ", ".join(falhas_ical)
+            + ". O calendário desses alojamentos mostra só as reservas dos CSV."
+        )
+
+    em_duvida = sum(
+        1 for eventos in eventos_por_listing.values()
+        for evento in eventos if evento["em_duvida"]
+    )
+    if em_duvida:
+        st.warning(
+            f"{em_duvida} reserva(s) futura(s) estão nos CSV mas já não "
+            "aparecem no calendário do Airbnb (contorno tracejado). Podem ter "
+            "sido canceladas: exporta um CSV novo para atualizar."
+        )
+
+    # ----- Entradas e saídas -----
+
+    seccao(
+        "Entradas e saídas nos próximos 14 dias",
+        "Para planear limpezas. \"Troca\" é uma saída e uma entrada no mesmo dia.",
+    )
+
+    nomes_dias = ["seg.", "ter.", "qua.", "qui.", "sex.", "sáb.", "dom."]
+    estilo_movimento = {"Entrada": "sobe", "Saída": "neutro", "Troca": "desce"}
+
+    def resumo_reserva(evento):
+        if evento is None:
+            return "—"
+        if evento["hospedes"] is None:
+            return h(f"{evento['noites']} noites")
+        return h(f"{evento['noites']} noites · {evento['hospedes']} hóspedes")
+
+    linhas_movimentos = [
+        [
+            h(
+                ("Hoje" if movimento["data"] == HOJE
+                 else nomes_dias[movimento["data"].dayofweek])
+                + f" {movimento['data']:%d/%m}"
+            ),
+            h(movimento["alojamento"]),
+            f'<span class="ad-pill {estilo_movimento[movimento["tipo"]]}">'
+            f'{h(movimento["tipo"])}</span>',
+            resumo_reserva(movimento["saida"]),
+            resumo_reserva(movimento["entrada"]),
+        ]
+        for movimento in core.movimentos(
+            {
+                propriedades.loc[listing, "Nome"]: eventos_por_listing[listing]
+                for listing in selecionados
+            },
+            HOJE, 14,
+        )
+    ]
+
+    if linhas_movimentos:
+        tabela_html(
+            ["Dia", "Alojamento", "Movimento", "Quem sai", "Quem entra"],
+            linhas_movimentos,
+        )
+    else:
+        st.caption("Sem entradas nem saídas nos próximos 14 dias.")
+
+    # ----- Noites livres -----
+
+    seccao(
+        "Noites livres nos próximos 30 dias",
+        "Noites sem reserva nem bloqueio: são as que ainda podes vender.",
+    )
+
+    def texto_periodo(inicio, fim, noites):
+        if noites == 1:
+            return f"{inicio.day} {MESES_CURTOS[inicio.month - 1]} (1)"
+        return (
+            f"{inicio.day} {MESES_CURTOS[inicio.month - 1]} – "
+            f"{fim.day} {MESES_CURTOS[fim.month - 1]} ({noites})"
+        )
+
+    linhas_livres = []
+    for listing in selecionados:
+        periodos = core.periodos_livres(eventos_por_listing[listing], HOJE, 30)
+        livres = sum(noites for _, _, noites in periodos)
+        linhas_livres.append([
+            c_alojamento(propriedades.loc[listing, "Nome"]),
+            f'<span class="ad-forte">{livres}</span>',
+            c_barra(100 * (30 - livres) / 30),
+            h(" · ".join(texto_periodo(*periodo) for periodo in periodos) or "—"),
+        ])
+
+    tabela_html(
+        ["Alojamento", "Noites livres", "Ocupação 30 dias", "Períodos livres (noites)"],
+        linhas_livres,
+    )
 
 
 # =========================================================
@@ -1707,8 +2157,7 @@ with aba_precos:
             referencia = float(plano_listing["Rendimento referência (€)"].sum())
             reservado = float(plano_listing["Já reservado (€)"].sum())
             linhas_objetivo.append([
-                imagem_html(propriedades.loc[listing, "Nome"], "ad-miniatura")
-                + " " + h(propriedades.loc[listing, "Nome"]),
+                c_alojamento(propriedades.loc[listing, "Nome"]),
                 h(propriedades.loc[listing, "Proprietário"]),
                 c_euros(referencia, 0),
                 f'<span class="ad-forte">{c_euros(objetivo, 0)}</span>',
@@ -1732,6 +2181,363 @@ with aba_precos:
             "Escolhe um alojamento na barra lateral para ver os preços por "
             "noite e ajustar a ocupação esperada."
         )
+
+
+# =========================================================
+# CUSTOS E ROI
+# =========================================================
+
+with aba_custos:
+
+    if not alojamento_unico:
+        st.info(
+            "Escolhe um alojamento na barra lateral para registar os custos "
+            "e ver o retorno do investimento."
+        )
+    else:
+        custos_alojamento = [
+            registo for registo in (registos_custos or [])
+            if registo["listing"] == alojamento_unico
+        ]
+        custos_ano = [
+            registo for registo in custos_alojamento
+            if int(registo["cost_year"]) == ano
+        ]
+        aviso_custos = None
+
+        if not custos_ano:
+            anos_guardados = sorted({
+                int(registo["cost_year"]) for registo in custos_alojamento
+                if int(registo["cost_year"]) < ano
+            })
+            if anos_guardados:
+                custos_ano = [
+                    registo for registo in custos_alojamento
+                    if int(registo["cost_year"]) == anos_guardados[-1]
+                ]
+                aviso_custos = (
+                    f"Valores copiados de {anos_guardados[-1]}. Ajusta o que "
+                    f"mudou e guarda para ficarem registados em {ano}."
+                )
+
+        def em_euros(centimos):
+            return None if centimos is None or pd.isna(centimos) else int(centimos) / 100
+
+        if custos_ano:
+            ordem = {
+                categoria: posicao
+                for posicao, (categoria, _) in enumerate(core.CUSTOS_SUGERIDOS)
+            }
+            custos_ano = sorted(
+                custos_ano,
+                key=lambda registo: (
+                    ordem.get(registo["category"], len(ordem)), registo["category"],
+                ),
+            )
+            base_custos = pd.DataFrame({
+                "Categoria": [registo["category"] for registo in custos_ano],
+                "Tipo": [registo["kind"] for registo in custos_ano],
+                "Mensal (€)": [em_euros(r["monthly_cents"]) for r in custos_ano],
+                "Anual (€)": [em_euros(r["annual_cents"]) for r in custos_ano],
+                "Notas": [registo.get("notes") or "" for registo in custos_ano],
+            })
+        else:
+            base_custos = pd.DataFrame({
+                "Categoria": [categoria for categoria, _ in core.CUSTOS_SUGERIDOS],
+                "Tipo": [tipo for _, tipo in core.CUSTOS_SUGERIDOS],
+                "Mensal (€)": None,
+                "Anual (€)": None,
+                "Notas": "",
+            })
+
+        for coluna in ["Mensal (€)", "Anual (€)"]:
+            base_custos[coluna] = pd.to_numeric(base_custos[coluna], errors="coerce")
+
+        seccao(
+            f"Custos de {ano}",
+            "Escreve o valor mensal ou o anual de cada linha (o anual ganha se "
+            "preencheres os dois). Podes acrescentar e apagar linhas.",
+        )
+        if aviso_custos:
+            st.caption(aviso_custos)
+
+        editor_custos = st.data_editor(
+            base_custos,
+            num_rows="dynamic",
+            hide_index=True,
+            use_container_width=True,
+            key=f"custos_{alojamento_unico}_{ano}",
+            column_config={
+                "Categoria": st.column_config.TextColumn(required=True),
+                "Tipo": st.column_config.SelectboxColumn(
+                    options=core.TIPOS_CUSTO, required=True,
+                    help=(
+                        "Juros e amortização são as duas partes da prestação "
+                        "do banco: a amortização é dinheiro que sai, mas "
+                        "fica como capital teu no imóvel."
+                    ),
+                ),
+                "Mensal (€)": st.column_config.NumberColumn(
+                    min_value=0.0, step=1.0, format="%.2f €",
+                ),
+                "Anual (€)": st.column_config.NumberColumn(
+                    min_value=0.0, step=1.0, format="%.2f €",
+                ),
+                "Notas": st.column_config.TextColumn(),
+            },
+        )
+
+        st.caption(
+            "A comissão do Airbnb não entra aqui: a receita usada já é o que "
+            "recebes depois da comissão e sem taxa turística."
+        )
+
+        definicoes_alojamento = sorted(
+            (
+                registo for registo in (registos_definicoes or [])
+                if registo["listing"] == alojamento_unico
+                and int(registo["cost_year"]) <= ano
+            ),
+            key=lambda registo: int(registo["cost_year"]),
+        )
+        guardadas = definicoes_alojamento[-1] if definicoes_alojamento else {}
+        mesmo_ano = bool(guardadas) and int(guardadas["cost_year"]) == ano
+
+        seccao(
+            "Pressupostos",
+            "Capital próprio investido é o dinheiro teu que lá puseste "
+            "(entrada, obras, mobília, impostos da compra).",
+        )
+
+        d1, d2, d3, d4, d5 = st.columns(5)
+        sufixo = f"{alojamento_unico}_{ano}"
+        with d1:
+            capital = st.number_input(
+                "Capital próprio investido (€)", min_value=0.0, step=1000.0,
+                value=float(guardadas.get("invested_cents") or 0) / 100,
+                key=f"capital_{sufixo}",
+            )
+        with d2:
+            valor_imovel = st.number_input(
+                "Valor do imóvel (€)", min_value=0.0, step=1000.0,
+                value=float(guardadas.get("property_value_cents") or 0) / 100,
+                key=f"imovel_{sufixo}",
+            )
+        with d3:
+            coeficiente_pct = st.number_input(
+                "Rendimento tributável (%)", min_value=0.0, max_value=100.0,
+                step=1.0, value=float(guardadas.get("taxable_pct") or 35),
+                key=f"coeficiente_{sufixo}",
+                help="Parte da receita sujeita a IRS no regime simplificado.",
+            )
+        with d4:
+            taxa_irs_pct = st.number_input(
+                "Taxa de IRS (%)", min_value=0.0, max_value=60.0, step=0.5,
+                value=float(guardadas.get("tax_rate_pct") or 28),
+                key=f"taxa_irs_{sufixo}",
+            )
+        with d5:
+            irs_real = st.number_input(
+                "IRS real pago (€)", min_value=0.0, step=50.0,
+                value=(
+                    float(guardadas.get("tax_paid_cents") or 0) / 100
+                    if mesmo_ano else 0.0
+                ),
+                key=f"irs_real_{sufixo}",
+                help="Deixa a 0 para usar a estimativa. Quando souberes o valor certo, escreve-o aqui.",
+            )
+
+        if tem_custos:
+            if st.button("Guardar custos e pressupostos", type="primary"):
+                try:
+                    guardar_custos(alojamento_unico, ano, editor_custos, {
+                        "capital": capital,
+                        "imovel": valor_imovel,
+                        "coeficiente": coeficiente_pct,
+                        "taxa": taxa_irs_pct,
+                        "irs_real": irs_real,
+                    })
+                    limpar_cache()
+                    st.rerun()
+                except Exception as erro:
+                    st.error("Não foi possível guardar os custos.")
+                    st.code(str(erro))
+        else:
+            st.info(
+                "Podes experimentar valores, mas para os guardar é preciso "
+                "criar as tabelas `cost_items` e `cost_settings` no Supabase. "
+                "O SQL está no separador Dados."
+            )
+
+        custos_lista = []
+        for _, linha in editor_custos.iterrows():
+            categoria = linha["Categoria"]
+            if pd.isna(categoria) or not str(categoria).strip():
+                continue
+            custos_lista.append({
+                "categoria": str(categoria).strip(),
+                "tipo": linha["Tipo"],
+                "anual": core.valor_anual(linha["Mensal (€)"], linha["Anual (€)"]),
+            })
+
+        fin = core.resultado_financeiro(
+            anual["total"],
+            custos_lista,
+            capital_investido=capital,
+            valor_imovel=valor_imovel,
+            coeficiente=coeficiente_pct / 100,
+            taxa_irs=taxa_irs_pct / 100,
+            irs_real=irs_real,
+            noites=anual["noites"],
+            media_noite=anual["media_noite"],
+            dias_ano=366 if pd.Timestamp(ano, 1, 1).is_leap_year else 365,
+        )
+
+        seccao(
+            f"Resultado de {ano}",
+            (
+                f"A receita inclui {euros(anual['futuro'])} de reservas futuras "
+                "já confirmadas; o ano ainda não acabou."
+                if ano == HOJE.year and anual["futuro"] > 0 else None
+            ),
+        )
+
+        def nota_percentagem(valor, texto):
+            if valor is None:
+                return h(texto)
+            return h(f"{percentagem(valor)} {texto}")
+
+        cartoes([
+            {
+                "rotulo": "Resultado final (dinheiro que sobra)",
+                "valor": euros(fin["resultado"]),
+                "nota": h(f"{euros(fin['resultado'] / 12)} por mês"),
+                "destaque": True,
+            },
+            {
+                "rotulo": "Retorno do capital (ROI)",
+                "valor": percentagem(fin["roi"]),
+                "nota": h(
+                    "resultado ÷ capital investido" if capital
+                    else "preenche o capital investido"
+                ),
+            },
+            {
+                "rotulo": "ROI com amortização",
+                "valor": percentagem(fin["roi_com_amortizacao"]),
+                "nota": h(
+                    f"inclui {euros(fin['amortizacao'])} de capital amortizado"
+                ),
+            },
+            {
+                "rotulo": "Receita líquida",
+                "valor": euros(fin["receita"]),
+                "nota": h("depois da comissão, sem taxa turística"),
+            },
+            {
+                "rotulo": "Despesas e IRS",
+                "valor": euros(fin["despesas"] + fin["irs"]),
+                "nota": nota_percentagem(
+                    100 * (fin["despesas"] + fin["irs"]) / fin["receita"]
+                    if fin["receita"] else None,
+                    "da receita",
+                ),
+            },
+        ])
+
+        def linha_conta(rotulo, valor, sinal="", forte=False):
+            peso = percentagem(100 * valor / fin["receita"]) if fin["receita"] else "—"
+            texto = sinal + euros(abs(valor)) if sinal else euros(valor)
+            mensal = sinal + euros(abs(valor) / 12) if sinal else euros(valor / 12)
+            if forte:
+                texto = f'<span class="ad-forte">{h(texto)}</span>'
+                return [f"<b>{h(rotulo)}</b>", texto, h(mensal), h(peso)]
+            return [h(rotulo), h(texto), h(mensal), h(peso)]
+
+        tabela_html(
+            ["Conta de exploração", "Ano", "Média por mês", "% da receita"],
+            [
+                linha_conta("Receita líquida", fin["receita"], forte=True),
+                linha_conta("Custos operacionais", fin["operacionais"], "−"),
+                linha_conta("Impostos e taxas (IMI, IVA)", fin["impostos"], "−"),
+                linha_conta("Juros do crédito", fin["juros"], "−"),
+                linha_conta("Amortização de capital", fin["amortizacao"], "−"),
+                linha_conta("Sobra antes de IRS", fin["sobra"], forte=True),
+                linha_conta(
+                    "IRS pago" if fin["usa_irs_real"] else "IRS estimado",
+                    fin["irs"], "−",
+                ),
+            ],
+            total=linha_conta("Resultado final", fin["resultado"]),
+        )
+
+        st.caption(
+            "IRS estimado = receita × "
+            f"{decimal(coeficiente_pct)} % × {decimal(taxa_irs_pct)} %. "
+            "É uma aproximação: confirma com o teu contabilista a base e a "
+            "taxa do teu caso."
+        )
+
+        seccao("Indicadores")
+
+        cartoes([
+            {
+                "rotulo": "Margem",
+                "valor": percentagem(fin["margem"]),
+                "nota": h("do que recebes, quanto fica contigo"),
+            },
+            {
+                "rotulo": "Custo por noite ocupada",
+                "valor": euros(fin["custo_por_noite"]),
+                "nota": h(
+                    f"a noite média rende {euros(anual['media_noite'])}"
+                ),
+            },
+            {
+                "rotulo": "Ponto de equilíbrio",
+                "valor": (
+                    f"{inteiro(fin['noites_equilibrio'])} noites"
+                    if fin["noites_equilibrio"] is not None else "—"
+                ),
+                "nota": h(
+                    f"{percentagem(fin['ocupacao_equilibrio'], 0)} de ocupação "
+                    f"ou {euros(fin['receita_equilibrio'], 0)} de receita"
+                    if fin["receita_equilibrio"] is not None
+                    else "preenche os custos"
+                ),
+            },
+            {
+                "rotulo": "Anos para recuperar o capital",
+                "valor": (
+                    decimal(fin["anos_retorno"])
+                    if fin["anos_retorno"] is not None else "—"
+                ),
+                "nota": h("capital ÷ resultado com amortização"),
+            },
+            {
+                "rotulo": "Receita ÷ valor do imóvel",
+                "valor": percentagem(fin["rendimento_bruto_imovel"]),
+                "nota": h(
+                    "rendimento bruto do imóvel" if valor_imovel
+                    else "preenche o valor do imóvel"
+                ),
+            },
+        ])
+
+        com_valor = sorted(
+            (custo for custo in custos_lista if custo["anual"] > 0),
+            key=lambda custo: custo["anual"], reverse=True,
+        )
+        if com_valor:
+            seccao("Para onde vai o dinheiro", "Custos do ano, do maior para o menor.")
+            barras_alojamentos([
+                (
+                    custo["categoria"],
+                    f"{custo['tipo']} · {euros(custo['anual'] / 12)} por mês",
+                    custo["anual"],
+                )
+                for custo in com_valor
+            ])
 
 
 # =========================================================
@@ -2139,6 +2945,7 @@ with aba_dados:
         nome for nome, existe in [
             ("properties", tem_propriedades),
             ("monthly_adjustments", tem_reembolsos),
+            ("cost_items e cost_settings", tem_custos),
         ] if not existe
     ]
 
@@ -2146,12 +2953,39 @@ with aba_dados:
         seccao(
             "Configuração em falta no Supabase",
             "Sem estas tabelas a aplicação funciona, mas não guarda nomes "
-            "curtos, proprietários nem reembolsos: " + ", ".join(em_falta) + ".",
+            "curtos, proprietários, reembolsos nem custos: "
+            + ", ".join(em_falta) + ".",
         )
         st.code(SQL_CONFIGURACAO, language="sql")
         st.caption(
             "Depois de correr o SQL, carrega em \"Atualizar dados\" na barra lateral."
         )
+
+    seccao(
+        "Calendário do Airbnb (iCal)",
+        "As ligações iCal ficam nos Secrets do Streamlit, não no código. "
+        "Cada linha usa o início do nome curto do alojamento.",
+    )
+
+    ligacoes_guardadas = ligacoes_ical()
+    tabela_html(
+        ["Alojamento", "Chave nos Secrets", "Ligação iCal"],
+        [
+            [
+                h(propriedades.loc[listing, "Nome"]),
+                h(codigo_foto(propriedades.loc[listing, "Nome"])),
+                '<span class="ad-pill sobe">configurada</span>'
+                if codigo_foto(propriedades.loc[listing, "Nome"]) in ligacoes_guardadas
+                else '<span class="ad-pill neutro">em falta</span>',
+            ]
+            for listing in listings
+        ],
+    )
+    st.code(
+        '[ical]\n"t1+1" = "https://www.airbnb.com/calendar/ical/....ics?s=...."\n'
+        '"t2" = "https://www.airbnb.com/calendar/ical/....ics?s=...."',
+        language="toml",
+    )
 
     seccao("Regras aplicadas")
     st.markdown(

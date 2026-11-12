@@ -71,7 +71,8 @@ class FalsoStreamlit(types.ModuleType):
     def code(self, t, language=None): self._regista("code", t)
     def stop(self): raise Parar()
     def rerun(self): raise Parar()
-    def columns(self, n): return [Contexto() for _ in range(n)]
+    def columns(self, n):
+        return [Contexto() for _ in range(n if isinstance(n, int) else len(n))]
     def tabs(self, nomes): return [Contexto() for _ in nomes]
     def expander(self, nome): return Contexto()
     def file_uploader(self, *a, **k): return None
@@ -156,8 +157,9 @@ class FalsaBase:
         return FalsaConsulta(self, nome)
 
 
-def correr(nome, tabelas, escolhas=None, botoes=()):
+def correr(nome, tabelas, escolhas=None, botoes=(), segredos=None):
     st = FalsoStreamlit(escolhas or {}, set(botoes))
+    st.secrets.update(segredos or {})
     base = FalsaBase(tabelas)
 
     plotly = types.ModuleType("plotly")
@@ -259,7 +261,78 @@ correr("Guilhermino, um alojamento", tabelas4, escolhas={"Carteira": "Guilhermin
 correr("ano 2025", tabelas4, escolhas={"Ano": 2025})
 correr("planear o ano corrente", {"reservations": reservas, "tourist_tax_monthly": taxas}, escolhas={"Ano a planear": 2026})
 
-# 5. Base de dados vazia.
+# 5. Custos e ROI guardados, e gravação.
+tabelas_custos = {
+    "reservations": reservas, "tourist_tax_monthly": taxas,
+    "properties": [], "monthly_adjustments": [],
+    "cost_items": [
+        {"listing": LISTING, "cost_year": 2026, "category": "Limpezas", "kind": "Operacional",
+         "monthly_cents": 40000, "annual_cents": None, "notes": ""},
+        {"listing": LISTING, "cost_year": 2026, "category": "Crédito: amortização de capital",
+         "kind": "Amortização de capital", "monthly_cents": 28500, "annual_cents": None, "notes": ""},
+        {"listing": LISTING, "cost_year": 2026, "category": "IMI", "kind": "Impostos e taxas",
+         "monthly_cents": None, "annual_cents": 27600, "notes": ""},
+    ],
+    "cost_settings": [
+        {"listing": LISTING, "cost_year": 2026, "invested_cents": 6500000, "property_value_cents": 0,
+         "taxable_pct": 35, "tax_rate_pct": 28, "tax_paid_cents": 0},
+    ],
+}
+st, _ = correr("custos e ROI", tabelas_custos)
+texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
+# receita 31.218,45 (estadias + cancelamento retido); despesas 4.800 + 3.420 + 276;
+# IRS 31.218,45 × 35 % × 28 % = 3.059,41; resultado 19.663,04.
+assert "19.663,04 €" in texto
+assert "30,3 %" in texto                      # ROI: 19.663,04 ÷ 65.000
+
+_, base = correr("botão guardar custos", tabelas_custos, botoes=["Guardar custos e pressupostos"])
+escritas = [(e[0], e[1]) for e in base.escritas]
+assert escritas == [("cost_items", "delete"), ("cost_items", "upsert"), ("cost_settings", "upsert")], escritas
+gravados = {linha["category"]: linha for linha in base.escritas[1][2]}
+assert gravados["Limpezas"]["monthly_cents"] == 40000 and gravados["IMI"]["annual_cents"] == 27600
+assert base.escritas[2][2]["invested_cents"] == 6500000
+
+# 6. Calendário com iCal (descarga simulada) e sem iCal.
+import io
+import urllib.request
+
+ICAL = (
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
+    "BEGIN:VEVENT\r\nDTEND;VALUE=DATE:20261116\r\nDTSTART;VALUE=DATE:20261110\r\n"
+    "DESCRIPTION:Reservation URL: https://www.airbnb.com/hosting/reservations/details/HMA3A3TEJW\r\n"
+    "SUMMARY:Reserved\r\nEND:VEVENT\r\n"
+    "BEGIN:VEVENT\r\nDTEND;VALUE=DATE:20261128\r\nDTSTART;VALUE=DATE:20261124\r\n"
+    "SUMMARY:Airbnb (Not available)\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+)
+
+
+class FalsaResposta(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+original = urllib.request.urlopen
+urllib.request.urlopen = lambda pedido, timeout=None: FalsaResposta(ICAL.encode())
+try:
+    st, _ = correr("calendário com iCal", {
+        "reservations": reservas, "tourist_tax_monthly": taxas,
+    }, segredos={"ical": {"t1+1": "https://exemplo/ical.ics"}})
+finally:
+    urllib.request.urlopen = original
+texto = " ".join(a[0] for t, a in st.saida if t == "markdown")
+assert "ad-cal-ev bloqueio" in texto and "ad-cal-ev duvida" in texto
+assert any(t == "warning" and "já não" in a[0] for t, a in st.saida)
+
+urllib.request.urlopen = lambda pedido, timeout=None: (_ for _ in ()).throw(OSError("sem rede"))
+try:
+    st, _ = correr("iCal indisponível", {
+        "reservations": reservas, "tourist_tax_monthly": taxas,
+    }, segredos={"ical": {"t1+1": "https://exemplo/ical.ics"}})
+finally:
+    urllib.request.urlopen = original
+assert any(t == "warning" and "iCal" in a[0] for t, a in st.saida)
+
+# 7. Base de dados vazia.
 st, _ = correr("sem reservas", {"reservations": [], "tourist_tax_monthly": []})
 assert any(t == "info" for t, _ in st.saida)
 
